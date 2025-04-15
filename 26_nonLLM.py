@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict, field
 from tenacity import retry, stop_after_attempt, wait_exponential
 from unstructured.partition.pdf import partition_pdf
 from unstructured.documents.elements import Title, NarrativeText, Table, Element
-from langchain_ollama import OllamaLLM  # Updated import
+from langchain.llms import Ollama
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from collections import Counter
@@ -78,9 +78,7 @@ class ParallelVectorStore:
         self.document_ids.append(doc_id)
         
         # We need to rebuild the TF-IDF matrix when a new document is added
-        # Only rebuild if we have enough documents
-        if len(self.documents) > 1:
-            self._rebuild_tfidf()
+        self._rebuild_tfidf()
         
         return doc_id
 
@@ -89,41 +87,51 @@ class ParallelVectorStore:
         corpus = [f"{doc.title} {doc.text}" for doc in self.documents.values()]
         
         if not corpus:
+            print("No documents in corpus, skipping TF-IDF rebuild")
             return
             
-        # Adjust parameters to work with any number of documents
-        # Set min_df=1 to work with any corpus size
-        self.tfidf_vectorizer = TfidfVectorizer(
-            max_df=1.0,  # Accept terms in up to 100% of documents 
-            min_df=1,    # Accept terms in at least 1 document
-            stop_words='english'
-        )
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
+        # Handle case where there are very few documents
+        doc_count = len(corpus)
+        print(f"Building TF-IDF matrix with {doc_count} documents")
+        
+        try:
+            # For single document case, use a more permissive configuration
+            if doc_count == 1:
+                self.tfidf_vectorizer = TfidfVectorizer(
+                    max_df=1.0,  # Include all terms (100%)
+                    min_df=1,    # Include terms that appear at least once
+                    stop_words='english'
+                )
+            else:
+                # Regular case with multiple documents
+                min_df_value = 1 if doc_count < 3 else 2
+                self.tfidf_vectorizer = TfidfVectorizer(
+                    max_df=0.95, 
+                    min_df=min_df_value, 
+                    stop_words='english'
+                )
+                
+            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
+            print(f"TF-IDF matrix built successfully with shape {self.tfidf_matrix.shape}")
+        except Exception as e:
+            print(f"Error building TF-IDF matrix: {str(e)}")
+            # Initialize with empty values so methods don't break
+            self.tfidf_vectorizer = None
+            self.tfidf_matrix = None
 
     def search(self, query_embedding: np.ndarray, k: int = 5) -> List[DocumentEntry]:
         query_embedding = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
-
-        # Ensure k is not larger than the number of documents
-        k = min(k, len(self.documents))
-        
-        if k == 0:
-            return []
 
         _, title_indices = self.title_index.search(query_embedding, k)
         _, text_indices = self.text_index.search(query_embedding, k)
 
         combined_indices = set(title_indices[0].tolist() + text_indices[0].tolist())
-        return [self.documents[list(self.documents.keys())[idx]] for idx in combined_indices if idx < len(self.documents)]
+        return [self.documents[list(self.documents.keys())[idx]] for idx in combined_indices]
     
     def tfidf_search(self, query: str, k: int = 5) -> List[DocumentEntry]:
         """Search documents using TF-IDF similarity"""
-        if self.tfidf_vectorizer is None or self.tfidf_matrix is None or len(self.documents) == 0:
-            return []
-            
-        # Ensure k is not larger than the number of documents
-        k = min(k, len(self.documents))
-        
-        if k == 0:
+        if self.tfidf_vectorizer is None or self.tfidf_matrix is None:
+            print("TF-IDF search not available, returning empty results")
             return []
             
         try:
@@ -134,19 +142,13 @@ class ParallelVectorStore:
             top_indices = similarity_scores.argsort()[-k:][::-1]
             
             # Return the corresponding documents
-            return [self.documents[self.document_ids[idx]] for idx in top_indices if idx < len(self.document_ids)]
+            return [self.documents[self.document_ids[idx]] for idx in top_indices]
         except Exception as e:
-            print(f"TF-IDF search error: {e}")
+            print(f"Error in TF-IDF search: {str(e)}")
             return []
 
     def keyword_search(self, keywords: List[str], k: int = 5) -> List[DocumentEntry]:
         """Search documents based on keyword matches"""
-        if not keywords or len(self.documents) == 0:
-            return []
-            
-        # Ensure k is not larger than the number of documents
-        k = min(k, len(self.documents))
-        
         keyword_scores = {}
         
         for doc_id, doc in self.documents.items():
@@ -199,9 +201,8 @@ class ParallelVectorStore:
             store.documents[k] = DocumentEntry(**v)
             store.document_ids.append(k)
             
-        # Rebuild TF-IDF matrix if enough documents
-        if len(store.documents) > 1:
-            store._rebuild_tfidf()
+        # Rebuild TF-IDF matrix
+        store._rebuild_tfidf()
         
         return store
 
@@ -254,7 +255,7 @@ class RuleBasedExtractor:
                 results[entity_type] = matches
                 
         # Add NER from spaCy
-        doc = nlp(text[:10000])  # Limit text to avoid memory issues
+        doc = nlp(text)
         for ent in doc.ents:
             entity_type = ent.label_
             if entity_type not in results:
@@ -289,7 +290,7 @@ class ExtractiveAnswerGenerator:
             return []
             
         # Create TF-IDF vectors for sentences
-        vectorizer = TfidfVectorizer(stop_words='english', min_df=1)
+        vectorizer = TfidfVectorizer(stop_words='english')
         try:
             sentence_vectors = vectorizer.fit_transform(sentences)
             query_vector = vectorizer.transform([query])
@@ -299,8 +300,7 @@ class ExtractiveAnswerGenerator:
             
             # Return sentences with their scores
             return [(sentence, score) for sentence, score in zip(sentences, similarities)]
-        except Exception as e:
-            print(f"Sentence ranking error: {e}")
+        except:
             # Handle cases where vectorization fails (e.g., empty sentences)
             return [(sentence, 0.0) for sentence in sentences]
     
@@ -327,15 +327,14 @@ class ExtractiveAnswerGenerator:
         answer = " ".join([sentence for sentence, _ in top_sentences])
         return answer
 
-
 class RAGSystem:
-    def __init__(self, model_name: str = "deepseek-r1", use_llm: bool = True):
+    def __init__(self, model_name: str = "deepseek-r1", use_llm: bool = True, method: str = "hybrid"):
         self.vector_store = ParallelVectorStore()
         self.templates = ResponseTemplate()
         self.extractor = RuleBasedExtractor()
         self.extractive_generator = ExtractiveAnswerGenerator()
         self.use_llm = use_llm
-        self.model_name = model_name
+        self.method = method  # Method can be "hybrid", "rule", "extractive"
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
@@ -343,11 +342,7 @@ class RAGSystem:
         self.embedding_model.eval()
 
         if use_llm:
-            try:
-                self.generation_model = OllamaLLM(model=model_name)
-            except Exception as e:
-                print(f"Warning: Failed to initialize LLM: {e}")
-                self.use_llm = False
+            self.generation_model = Ollama(model=model_name)
             
         # Initialize common extraction patterns
         self._initialize_extraction_patterns()
@@ -363,22 +358,8 @@ class RAGSystem:
         # Relation patterns
         self.extractor.add_entity_pattern("definition", r'(\w+)\s+is\s+defined\s+as\s+([^.]+)')
         self.extractor.add_entity_pattern("comparison", r'compared\s+to\s+(\w+)[,\s]+(\w+)\s+([^.]+)')
-        
-        # Add more rule patterns specific to rule-based approach
-        self.extractor.add_entity_pattern("cause_effect", r'(?:because|due to|as a result of)\s+([^,\.]+)')
-        self.extractor.add_entity_pattern("process_step", r'(?:step|first|second|third|next|finally|lastly)\s+([^,\.]+)')
-        self.extractor.add_entity_pattern("requirement", r'(?:requires|requirement|necessary|needed|must have)\s+([^,\.]+)')
-        self.extractor.add_entity_pattern("benefit", r'(?:benefit|advantage|useful for|helps with)\s+([^,\.]+)')
 
     def get_embedding(self, text: str) -> np.ndarray:
-        # Handle empty or very short texts
-        if not text or len(text.strip()) < 3:
-            text = "empty document"
-            
-        # Truncate very long texts to avoid memory issues
-        if len(text) > 10000:
-            text = text[:10000]
-            
         inputs = self.tokenizer(
             text,
             max_length=512,
@@ -395,36 +376,24 @@ class RAGSystem:
 
     def extract_keywords(self, text: str, max_keywords: int = 10) -> List[str]:
         """Extract key terms from text using spaCy"""
-        # Handle empty text
-        if not text or len(text.strip()) < 3:
-            return []
-            
-        # Truncate very long texts
-        if len(text) > 10000:
-            text = text[:10000]
-            
-        try:
-            doc = nlp(text)
-            
-            # Extract nouns, proper nouns, and named entities
-            keywords = []
-            
-            # Add named entities
-            keywords.extend([ent.text.lower() for ent in doc.ents])
-            
-            # Add noun phrases and important nouns
-            for chunk in doc.noun_chunks:
-                keywords.append(chunk.text.lower())
-            
-            # Filter out stopwords and short terms
-            keywords = [k for k in keywords if len(k) > 2]
-            
-            # Count and return most common keywords
-            counter = Counter(keywords)
-            return [word for word, _ in counter.most_common(max_keywords)]
-        except Exception as e:
-            print(f"Keyword extraction error: {e}")
-            return []
+        doc = nlp(text)
+        
+        # Extract nouns, proper nouns, and named entities
+        keywords = []
+        
+        # Add named entities
+        keywords.extend([ent.text.lower() for ent in doc.ents])
+        
+        # Add noun phrases and important nouns
+        for chunk in doc.noun_chunks:
+            keywords.append(chunk.text.lower())
+        
+        # Filter out stopwords and short terms
+        keywords = [k for k in keywords if len(k) > 2]
+        
+        # Count and return most common keywords
+        counter = Counter(keywords)
+        return [word for word, _ in counter.most_common(max_keywords)]
 
     def _convert_table_to_text(self, table: Table) -> str:
         """Convert a table to row-wise sentence format."""
@@ -469,59 +438,93 @@ class RAGSystem:
 
     def ingest_pdf(self, pdf_path: str):
         try:
+            print(f"Ingesting PDF from {pdf_path}")
             elements = partition_pdf(
                 pdf_path,
                 detect_tables=True,
                 infer_table_structure=True,
                 strategy="hi_res"
             )
-    
+            
+            print(f"Found {len(elements)} elements in the PDF")
+
             # Process all elements maintaining their order
             processed_content = []
             current_section = {'title': '', 'text': []}
+            sections_count = 0
             
-            for element in elements:
-                if isinstance(element, Title):
-                    if current_section['title'] or current_section['text']:
-                        self._process_section(current_section, pdf_path)
-                    current_section = {'title': str(element), 'text': []}
-                elif isinstance(element, Table):
-                    # Convert table to text and add to current section
-                    table_text = self._convert_table_to_text(element)
-                    current_section['text'].append(table_text)
-                elif isinstance(element, NarrativeText):
-                    current_section['text'].append(str(element))
-    
+            for i, element in enumerate(elements):
+                try:
+                    if isinstance(element, Title):
+                        if current_section['title'] or current_section['text']:
+                            self._process_section(current_section, pdf_path)
+                            sections_count += 1
+                        current_section = {'title': str(element), 'text': []}
+                        print(f"Found title: {str(element)[:50]}...")
+                    elif isinstance(element, Table):
+                        # Convert table to text and add to current section
+                        table_text = self._convert_table_to_text(element)
+                        current_section['text'].append(table_text)
+                        print(f"Added table content ({len(table_text)} chars)")
+                    elif isinstance(element, NarrativeText):
+                        current_section['text'].append(str(element))
+                        print(f"Added text content ({len(str(element))} chars)")
+                except Exception as e:
+                    print(f"Error processing element {i}: {str(e)}")
+
+            # Process the last section if it exists
             if current_section['title'] or current_section['text']:
                 self._process_section(current_section, pdf_path)
+                sections_count += 1
+                
+            print(f"Processed {sections_count} sections from the PDF")
+            
+            # Check if documents were added
+            print(f"Total documents in vector store: {len(self.vector_store.documents)}")
                 
         except Exception as e:
-            print(f"Error ingesting PDF {pdf_path}: {e}")
+            print(f"Error ingesting PDF: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def _process_section(self, section: Dict, source: str):
-        title = section['title']
-        text = ' '.join(section['text'])
-        
-        # Skip empty sections
-        if not text.strip():
-            return
+        try:
+            title = section['title']
+            text = ' '.join(section['text'])
             
-        title_embedding = self.get_embedding(title) if title else self.get_embedding("No title")
-        text_embedding = self.get_embedding(text)
-        
-        # Extract keywords and entities
-        keywords = self.extract_keywords(text)
-        entities = self.extractor.extract_entities(text)
+            # Skip empty sections
+            if not text.strip():
+                print("Skipping empty section")
+                return
+                
+            print(f"Processing section: '{title[:50]}...' with {len(text)} chars of text")
+            
+            title_embedding = self.get_embedding(title) if title else self.get_embedding("No title")
+            text_embedding = self.get_embedding(text)
+            
+            # Extract keywords and entities
+            keywords = self.extract_keywords(text)
+            entities = self.extractor.extract_entities(text)
+            
+            print(f"Extracted {len(keywords)} keywords and {sum(len(v) for v in entities.values())} entities")
 
-        self.vector_store.add_document(
-            title=title,
-            text=text,
-            title_embedding=title_embedding,
-            text_embedding=text_embedding,
-            keywords=keywords,
-            entities=entities,
-            metadata={'source': source}
-        )
+            # Add document to vector store
+            doc_id = self.vector_store.add_document(
+                title=title,
+                text=text,
+                title_embedding=title_embedding,
+                text_embedding=text_embedding,
+                keywords=keywords,
+                entities=entities,
+                metadata={'source': source}
+            )
+            
+            print(f"Added document with ID: {doc_id}")
+            
+        except Exception as e:
+            print(f"Error processing section: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def _remove_think_tags(self, text: str) -> str:
         """Remove <think>...</think> tags and their content from the response."""
@@ -565,134 +568,103 @@ class RAGSystem:
                          "can", "do", "does", "did", "has", "have", "had", "the", "a", "an", 
                          "in", "on", "at", "to", "for", "with", "about", "of"}
         
-        try:
-            # Process with spaCy
-            doc = nlp(question)
+        # Process with spaCy
+        doc = nlp(question)
+        
+        # Extract key terms (nouns, named entities, adjectives)
+        keywords = []
+        
+        # Add named entities
+        for ent in doc.ents:
+            keywords.append(ent.text.lower())
             
-            # Extract key terms (nouns, named entities, adjectives)
-            keywords = []
-            
-            # Add named entities
-            for ent in doc.ents:
-                keywords.append(ent.text.lower())
+        # Add nouns and adjectives
+        for token in doc:
+            if token.pos_ in ["NOUN", "PROPN"] and token.text.lower() not in question_words:
+                keywords.append(token.text.lower())
+            if token.pos_ == "ADJ" and len(token.text) > 3:
+                keywords.append(token.text.lower())
                 
-            # Add nouns and adjectives
-            for token in doc:
-                if token.pos_ in ["NOUN", "PROPN"] and token.text.lower() not in question_words:
-                    keywords.append(token.text.lower())
-                if token.pos_ == "ADJ" and len(token.text) > 3:
-                    keywords.append(token.text.lower())
-                    
-            return list(set(keywords))
-        except Exception as e:
-            print(f"Error extracting keywords: {e}")
-            # Fallback to simple word splitting
-            words = question.lower().split()
-            return [w for w in words if w not in question_words and len(w) > 3]
+        return list(set(keywords))
 
-    def _generate_rule_based_response(self, question: str, results: List[DocumentEntry]) -> str:
-        """Generate response using rule-based pattern matching and template filling"""
+    def _generate_non_llm_response(self, question: str, results: List[DocumentEntry]) -> Tuple[str, bool]:
+        """Generate response using non-LLM techniques"""
         if not results:
-            return "No relevant information found."
+            return "No relevant information found.", False
             
         question_type = self._classify_question_type(question)
-        question_keywords = self._extract_question_keywords(question)
         
-        # 1. Definition questions
+        # For definition questions, try to extract definitions
         if question_type == "definition":
-            for term in question_keywords:
+            # Extract what's being defined
+            match = re.search(r'(?:what is|define|meaning of|definition of)\s+([^?\.]+)', question.lower())
+            if match:
+                term = match.group(1).strip()
+                
+                # Look for definitions in the results
                 for doc in results:
-                    # Try different definition patterns
-                    patterns = [
-                        rf'{re.escape(term)}\s+is\s+defined\s+as\s+([^\.]+)',
-                        rf'{re.escape(term)}\s+refers\s+to\s+([^\.]+)',
-                        rf'{re.escape(term)}\s+means\s+([^\.]+)',
-                        rf'{re.escape(term)}\s+is\s+(?:a|an|the)\s+([^\.]+)'
+                    # Look for patterns like "X is defined as Y" or "X is Y"
+                    definition_patterns = [
+                        rf'{term}\s+is\s+defined\s+as\s+([^\.]+)',
+                        rf'{term}\s+refers\s+to\s+([^\.]+)',
+                        rf'{term}\s+means\s+([^\.]+)',
+                        rf'{term}\s+is\s+(?:a|an|the)\s+([^\.]+)'
                     ]
                     
-                    for pattern in patterns:
-                        match = re.search(pattern, doc.text.lower(), re.IGNORECASE)
-                        if match:
-                            definition = match.group(1).strip()
+                    for pattern in definition_patterns:
+                        matches = re.search(pattern, doc.text.lower())
+                        if matches:
+                            definition = matches.group(1).strip()
                             return self.templates.generate_response(
-                                "definition",
-                                entity=term.capitalize(),
+                                "definition", 
+                                entity=term.capitalize(), 
                                 definition=definition
-                            )
+                            ), True
         
-        # 2. List questions
+        # For list questions, extract bullet points
         if question_type == "list":
-            topic_pattern = r'(?:list|what are|enumerate)\s+([^?\.]+)'
-            topic_match = re.search(topic_pattern, question.lower())
-            topic = topic_match.group(1).strip() if topic_match else ""
+            # Extract the topic
+            match = re.search(r'(?:list|what are|enumerate)\s+([^?\.]+)', question.lower())
+            topic = match.group(1).strip() if match else ""
             
+            # Extract sentences with list indicators
             list_items = []
             for doc in results:
-                # Look for bulleted or numbered lists in the text
-                list_pattern = r'(?:•|\*|\d+\.)\s+([^\n]+)'
-                matches = re.findall(list_pattern, doc.text)
-                if matches:
-                    for item in matches[:7]:  # Limit to 7 items
-                        list_items.append(f"• {item}")
-                
-                # If no explicit list found, try to extract sentences that contain topic keywords
-                if not list_items:
-                    sentences = sent_tokenize(doc.text)
-                    for sentence in sentences:
-                        if (topic in sentence.lower() or 
-                            any(kw in sentence.lower() for kw in question_keywords)):
-                            list_items.append(f"• {sentence}")
-                        if len(list_items) >= 7:
-                            break
-            
+                sentences = sent_tokenize(doc.text)
+                for sentence in sentences:
+                    # Look for sentences with list indicators or that contain the topic
+                    if (topic in sentence.lower() or 
+                        any(kw in sentence.lower() for kw in self._extract_question_keywords(question))):
+                        list_items.append(f"• {sentence}")
+                        
+                # Limit to reasonable number of items
+                if len(list_items) >= 5:
+                    break
+                    
             if list_items:
                 return self.templates.generate_response(
                     "list",
-                    topic=topic or "relevant points",
-                    items="\n".join(list_items[:7])
-                )
+                    topic=topic,
+                    items="\n".join(list_items[:7])  # Limit to 7 items
+                ), True
         
-        # 3. Comparison questions
-        if question_type == "comparison":
-            comparison_pattern = r'(?:compare|difference between|versus|vs\.)\s+([^\s]+)\s+(?:and|with|to)\s+([^\s?\.]+)'
-            match = re.search(comparison_pattern, question.lower())
+        # For summary questions, use extractive summarization
+        if question_type == "summary":
+            # Extract the topic
+            match = re.search(r'(?:summarize|summary of|overview of|brief on|describe)\s+([^?\.]+)', question.lower())
+            topic = match.group(1).strip() if match else ""
             
-            if match:
-                entity1 = match.group(1).strip()
-                entity2 = match.group(2).strip()
-                comparison_points = []
+            # Generate extractive summary
+            summary = self.extractive_generator.generate_answer(question, results, max_sentences=5)
+            
+            if summary and summary != "No relevant information found.":
+                return self.templates.generate_response(
+                    "summary",
+                    topic=topic if topic else "the topic",
+                    summary=summary
+                ), True
                 
-                for doc in results:
-                    # Look for direct comparison sentences
-                    patterns = [
-                        rf'(?:difference|differences|compared|comparing|versus|vs\.)[^\.]*{re.escape(entity1)}[^\.]*{re.escape(entity2)}([^\.]+)',
-                        rf'{re.escape(entity1)}[^\.]*(?:unlike|while|whereas|but|however)[^\.]*{re.escape(entity2)}([^\.]+)',
-                        rf'{re.escape(entity2)}[^\.]*(?:unlike|while|whereas|but|however)[^\.]*{re.escape(entity1)}([^\.]+)'
-                    ]
-                    
-                    for pattern in patterns:
-                        matches = re.findall(pattern, doc.text.lower(), re.IGNORECASE)
-                        for m in matches:
-                            comparison_points.append(f"• {m.strip()}")
-                    
-                    # If not enough direct comparisons, find sentences mentioning both entities
-                    if len(comparison_points) < 3:
-                        sentences = sent_tokenize(doc.text)
-                        for sentence in sentences:
-                            sentence_lower = sentence.lower()
-                            if entity1 in sentence_lower and entity2 in sentence_lower:
-                                comparison_points.append(f"• {sentence.strip()}")
-                
-                if comparison_points:
-                    comparison_text = "\n".join(set(comparison_points)[:5])  # Remove duplicates
-                    return self.templates.generate_response(
-                        "comparison",
-                        entity1=entity1.capitalize(),
-                        entity2=entity2.capitalize(),
-                        comparison=comparison_text
-                    )
-        
-        # 4. Entity questions (who, when, where)
+        # For specific entity extraction (people, dates, locations)
         if question_type in ["person", "temporal", "location"]:
             entity_types = {
                 "person": ["PERSON", "ORG"],
@@ -700,168 +672,35 @@ class RAGSystem:
                 "location": ["GPE", "LOC"]
             }
             
-            target_types = entity_types.get(question_type, [])
-            found_entities = []
-            context_sentences = []
-            
+            # Extract relevant entities from results
+            relevant_entities = []
             for doc in results:
-                # Look for entities in the document metadata
+                # Use the pre-extracted entities if available
                 if doc.entities:
-                    for ent_type in target_types:
+                    for ent_type in entity_types.get(question_type, []):
                         if ent_type in doc.entities:
-                            found_entities.extend(doc.entities[ent_type])
-                
-                # Also look for context sentences containing these entities
-                if found_entities:
-                    sentences = sent_tokenize(doc.text)
-                    for sentence in sentences:
-                        if any(entity.lower() in sentence.lower() for entity in found_entities):
-                            if any(kw in sentence.lower() for kw in question_keywords):
-                                context_sentences.append(sentence)
-                                break
+                            relevant_entities.extend(doc.entities[ent_type])
+                            
+            if relevant_entities:
+                # Format response based on question type
+                if question_type == "person":
+                    return f"The relevant people/organizations are: {', '.join(set(relevant_entities)[:5])}", True
+                elif question_type == "temporal":
+                    return f"The relevant dates/times are: {', '.join(set(relevant_entities)[:5])}", True
+                elif question_type == "location":
+                    return f"The relevant locations are: {', '.join(set(relevant_entities)[:5])}", True
+        
+        # Default: Use extractive answer generation
+        answer = self.extractive_generator.generate_answer(question, results)
+        if answer and answer != "No relevant information found.":
+            # Apply template
+            return self.templates.generate_response(
+                "fallback",
+                content=answer
+            ), True
             
-            if found_entities:
-                unique_entities = list(set(found_entities))[:5]  # Limit to top 5 unique entities
-                entities_str = ", ".join(unique_entities)
-                
-                if context_sentences:
-                    context = " ".join(context_sentences[:2])  # Provide some context
-                    return f"Based on the document, {entities_str}. {context}"
-                else:
-                    return f"Based on the document: {entities_str}."
-        
-        # 5. Explanation questions (why, how)
-        if question_type in ["explanation"]:
-            explanation_sentences = []
-            
-            for doc in results:
-                sentences = sent_tokenize(doc.text)
-                for sentence in sentences:
-                    sentence_lower = sentence.lower()
-                    # Look for causal language
-                    if any(marker in sentence_lower for marker in 
-                           ["because", "since", "as a result", "therefore", "thus", 
-                            "hence", "due to", "causes", "caused by", "reason"]):
-                        if any(kw in sentence_lower for kw in question_keywords):
-                            explanation_sentences.append(sentence)
-                
-                # Look for extracted cause-effect relationships
-                cause_effect_entities = self.extractor.extract_entities(doc.text).get("cause_effect", [])
-                if cause_effect_entities:
-                    for entity in cause_effect_entities[:3]:
-                        explanation_sentences.append(f"This occurs because {entity}.")
-            
-            if explanation_sentences:
-                explanation = " ".join(explanation_sentences[:3])
-                return f"Explanation: {explanation}"
-        
-        # 6. Quantity questions (how many, how much)
-        if question_type == "quantity":
-            quantity_pattern = r'(?:how many|how much|count of|number of)\s+([^?\.]+)'
-            match = re.search(quantity_pattern, question.lower())
-            
-            if match:
-                target = match.group(1).strip()
-                for doc in results:
-                    # Look for sentences with numbers and the target
-                    sentences = sent_tokenize(doc.text)
-                    for sentence in sentences:
-                        if target in sentence.lower() and re.search(r'\d+', sentence):
-                            # Extract the number and its context
-                            return f"Based on the document: {sentence}"
-        
-        # 7. Generic response based on most relevant sentences
-        # Fall back to extracting the most relevant sentences
-        relevant_sentences = []
-        for doc in results:
-            sentences = sent_tokenize(doc.text)
-            for sentence in sentences:
-                sentence_lower = sentence.lower()
-                # Check if sentence contains question keywords
-                if any(kw in sentence_lower for kw in question_keywords):
-                    relevant_sentences.append(sentence)
-            
-        if relevant_sentences:
-            # Return the top 3 relevant sentences
-            response = " ".join(relevant_sentences[:3])
-            return f"Based on the document: {response}"
-        
-        # Ultimate fallback
-        return f"Based on the document, I couldn't find specific information about {', '.join(question_keywords)}."
-
-    def _generate_extractive_response(self, question: str, results: List[DocumentEntry]) -> str:
-        """Generate response by extracting and reranking sentences from documents"""
-        if not results:
-            return "No relevant information found."
-        
-        # Extract sentences from all documents
-        all_sentences = []
-        
-        for doc in results:
-            sentences = self.extractive_generator.extract_sentences(doc.text)
-            for sentence in sentences:
-                # Add the sentence with its document info
-                all_sentences.append({
-                    'text': sentence,
-                    'doc_id': doc.id,
-                    'title': doc.title
-                })
-        
-        # Rank sentences by relevance to the query
-        sentence_texts = [s['text'] for s in all_sentences]
-        ranked_sentences = self.extractive_generator.rank_sentences(question, sentence_texts)
-        
-        # Add rank scores back to sentence objects
-        for i, (_, score) in enumerate(ranked_sentences):
-            all_sentences[i]['score'] = score
-        
-        # Sort by score in descending order
-        sorted_sentences = sorted(all_sentences, key=lambda x: x['score'], reverse=True)
-        
-        # Select top sentences (adjust the number as needed)
-        top_n = min(5, len(sorted_sentences))
-        top_sentences = sorted_sentences[:top_n]
-        
-        # Determine the question type to format the response appropriately
-        question_type = self._classify_question_type(question)
-        
-        # Format the response based on question type
-        if question_type == "definition":
-            # For definition questions, prefer sentences that have definition structure
-            definition_sentences = []
-            for sentence in top_sentences:
-                text = sentence['text'].lower()
-                # Look for definition patterns
-                if re.search(r'is defined as|refers to|means|is a|is an|is the', text):
-                    definition_sentences.append(sentence)
-            
-            if definition_sentences:
-                return definition_sentences[0]['text']
-            else:
-                return top_sentences[0]['text']
-                
-        elif question_type == "list":
-            # For list questions, format as bullet points
-            list_items = [f"• {s['text']}" for s in top_sentences]
-            return "\n".join(list_items)
-            
-        elif question_type == "comparison":
-            # For comparison questions, try to find sentences that cover both compared entities
-            question_keywords = self._extract_question_keywords(question)
-            comparison_sentences = []
-            
-            # Check which sentences contain multiple keywords
-            for sentence in top_sentences:
-                text = sentence['text'].lower()
-                keyword_count = sum(1 for kw in question_keywords if kw in text)
-                if keyword_count >= 2:  # Contains at least 2 of the keywords
-                    comparison_sentences.append(sentence)
-            
-            if comparison_sentences:
-                return " ".join([s['text'] for s in comparison_sentences[:3]])
-            
-        # Default: concatenate top sentences
-        return " ".join([s['text'] for s in top_sentences])
+        # No good answer found with non-LLM methods
+        return "", False
 
     def query(self, question: str, k: int = 5, force_llm: bool = False) -> str:
         """
@@ -875,15 +714,11 @@ class RAGSystem:
         Returns:
             The answer to the question
         """
-        # Handle empty knowledge base
-        if not self.vector_store.documents:
-            return "The knowledge base is empty. Please ingest some documents first."
-            
         # Extract keywords from the question
         question_keywords = self._extract_question_keywords(question)
         
         # First try keyword search for exact matches
-        keyword_results = self.vector_store.keyword_search(question_keywords, k=k) if question_keywords else []
+        keyword_results = self.vector_store.keyword_search(question_keywords, k=k)
         
         # If not enough results, try TF-IDF search
         if len(keyword_results) < k:
@@ -915,8 +750,47 @@ class RAGSystem:
         # Get final results
         results = keyword_results[:k]
         
-        # If LLM is requested and available, use it
-        if force_llm and self.use_llm:
+        # Choose method based on configuration
+        if self.method == "rule" and not force_llm:
+            # Rule-based approach
+            non_llm_response, success = self._generate_non_llm_response(question, results)
+            if success:
+                return non_llm_response
+            return "No relevant rule-based answer found."
+            
+        elif self.method == "extractive" and not force_llm:
+            # Pure extractive approach
+            return self.extractive_generator.generate_answer(question, results)
+            
+        elif self.method == "extraction" and not force_llm:
+            # Entity extraction approach - extract entities and present them
+            all_entities = {}
+            for doc in results:
+                for entity_type, entities in doc.entities.items():
+                    if entity_type not in all_entities:
+                        all_entities[entity_type] = set()
+                    all_entities[entity_type].update(entities)
+            
+            if all_entities:
+                response_parts = ["Key information extracted from the documents:"]
+                for entity_type, entities in all_entities.items():
+                    if len(entities) > 0:
+                        entity_list = ", ".join(list(entities)[:5])
+                        response_parts.append(f"{entity_type}: {entity_list}")
+                
+                return "\n".join(response_parts)
+            return "No relevant entities found in the documents."
+            
+        elif self.method == "tfidf" and not force_llm:
+            # TF-IDF based approach - use only TF-IDF search and return matching docs
+            tfidf_results = self.vector_store.tfidf_search(question, k=k)
+            if tfidf_results:
+                top_result = tfidf_results[0]
+                return f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
+            return "No relevant documents found using TF-IDF search."
+            
+        elif self.use_llm:
+            # Hybrid approach with LLM
             context = "\n\n".join([
                 f"Section: {doc.title}\nContent: {doc.text[:1000]}..." 
                 for doc in results
@@ -929,54 +803,52 @@ class RAGSystem:
             cleaned_response = self._remove_think_tags(response)
             
             return cleaned_response
-        
-        # Otherwise use the specified non-LLM approach
-        if self.model_name == "rule":
-            return self._generate_rule_based_response(question, results)
-        elif self.model_name == "extractive" or not self.use_llm:
-            return self._generate_extractive_response(question, results)
         else:
-            # If LLM was requested but not available, use extractive as fallback
-            return self._generate_extractive_response(question, results)
+            # Default to extractive if no method matched
+            return self.extractive_generator.generate_answer(question, results)
 
     def save(self, path_prefix: str):
         self.vector_store.save(path_prefix)
 
     @classmethod
-    def load(cls, path_prefix: str, model_name: str = "deepseek-chat", use_llm: bool = True):
-        rag = cls(model_name, use_llm=use_llm)
+    def load(cls, path_prefix: str, model_name: str = "deepseek-chat", use_llm: bool = True, method: str = "hybrid"):
+        rag = cls(model_name, use_llm=use_llm, method=method)
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag
-
-
-
 
 # Usage Example
 if __name__ == "__main__":
     PDF_PATH = "/home/shahanahmed/Documents/pdf1.pdf"  
 
-    # Create RAG system with LLM backup
-    rag1 = RAGSystem(model_name="deepseek-r1", use_llm=True)
-    rag1.ingest_pdf(PDF_PATH)
+    # Create a single RAG system and ingest the PDF
+    rag = RAGSystem(model_name="gemma3:latest", use_llm=True, method="hybrid")
+    rag.ingest_pdf(PDF_PATH)
     
-    # Create pure extractive non-LLM RAG system
-    rag2 = RAGSystem(model_name="extractive", use_llm=False)
-    rag2.ingest_pdf(PDF_PATH)
+    # Set up different queries using different methods
+    question = "Tell me about India"
     
-    # Create pure rule-based non-LLM RAG system
-    rag3 = RAGSystem(model_name="rule", use_llm=False)
-    rag3.ingest_pdf(PDF_PATH)
+    # Hybrid approach
+    print("Hybrid approach (non-LLM with LLM fallback):")
+    rag.method = "hybrid"
+    print(rag.query(question))
     
-    question = "Tell me about the document"
-    
-    # Try LLM-based response
-    print("LLM-based approach:")
-    print(rag1.query(question))
-    
-    # Pure extractive non-LLM approach
-    print("\nPure extractive non-LLM approach:")
-    print(rag2.query(question))
-    
-    # Pure rule-based non-LLM approach
-    print("\nPure rule-based non-LLM approach:")
-    print(rag3.query(question))
+    # Rule-based approach
+    print("\nPure non-LLM approach (rule):")
+    rag.method = "rule"
+    print(rag.query(question, force_llm=False))
+
+    # Extractive approach
+    print("\nPure non-LLM approach (extractive):")
+    rag.method = "extractive"
+    print(rag.query(question, force_llm=False))
+
+    # Entity extraction approach
+    print("\nPure non-LLM approach (extraction):")
+    rag.method = "extraction"
+    print(rag.query(question, force_llm=False))
+
+    # TF-IDF approach
+    print("\nPure non-LLM approach (tfidf):")
+    rag.method = "tfidf"
+    print(rag.query(question, force_llm=False))
+
