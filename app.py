@@ -1,127 +1,111 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import shutil
-import os
-import tempfile
-from rag_system import RAGSystem  # আপনার সিস্টেম থেকে আমদানি
+import streamlit as st
+import requests
+import time
 
-app = FastAPI(title="RAG Chatbot API")
+# Configure page
+st.set_page_config(page_title="RAG Chatbot", layout="wide")
 
-# CORS সেটিংস (Streamlit এর সাথে যোগাযোগের জন্য)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "Training"
+if "pdf_processed" not in st.session_state:
+    st.session_state.pdf_processed = False
 
-# সাময়িক PDF সংরক্ষণের জন্য ফোল্ডার
-UPLOAD_DIR = "uploaded_pdfs"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+def upload_pdf(file):
+    """Upload PDF to backend"""
+    files = {"file": file}
+    response = requests.post("http://localhost:8000/upload-pdf", files=files)
+    return response.json()
 
-# RAG সিস্টেম সংরক্ষণের জন্য ফোল্ডার
-MODEL_DIR = "saved_models"
-os.makedirs(MODEL_DIR, exist_ok=True)
+def get_answer(question, model_type, model_name):
+    """Get answer from backend"""
+    response = requests.post(
+        "http://localhost:8000/ask",
+        params={
+            "question": question,
+            "model_type": model_type,
+            "model_name": model_name
+        }
+    )
+    return response.json()
 
-# সক্রিয় RAG সিস্টেম
-active_rag = None
+# Sidebar navigation
+with st.sidebar:
+    st.title("Navigation")
+    if st.button("Training Page"):
+        st.session_state.current_page = "Training"
+    if st.button("Playground"):
+        if not st.session_state.pdf_processed:
+            st.error("Please process a PDF first!")
+        else:
+            st.session_state.current_page = "Playground"
 
-@app.post("/upload_and_train")
-async def upload_and_train(
-    file: UploadFile = File(...),
-    model_name: str = Form("gemma3:latest"),
-    use_llm: bool = Form(True),
-    method: str = Form("hybrid")
-):
-    """PDF আপলোড এবং RAG সিস্টেম প্রশিক্ষণ"""
-    try:
-        # সাময়িক ফাইল সংরক্ষণ
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # RAG সিস্টেম তৈরি ও প্রশিক্ষণ
-        global active_rag
-        active_rag = RAGSystem(model_name=model_name, use_llm=use_llm, method=method)
-        active_rag.ingest_pdf(file_path)
-        
-        # মডেল সংরক্ষণ
-        model_path_prefix = os.path.join(MODEL_DIR, f"{os.path.splitext(file.filename)[0]}")
-        active_rag.save(model_path_prefix)
-        
-        return {"status": "success", "message": "PDF আপলোড এবং RAG সিস্টেম প্রশিক্ষণ সম্পন্ন হয়েছে"}
+# Training Page
+if st.session_state.current_page == "Training":
+    st.title("PDF Training")
+    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"সার্ভার ত্রুটি: {str(e)}")
+    if uploaded_file:
+        if st.button("Process PDF"):
+            with st.spinner("Processing PDF..."):
+                result = upload_pdf(uploaded_file)
+                st.success(result["message"])
+                st.session_state.pdf_processed = True
+                st.session_state.current_page = "Playground"
 
-@app.post("/load_model")
-async def load_model(
-    filename: str = Form(...),
-    model_name: str = Form("gemma3:latest"),
-    use_llm: bool = Form(True),
-    method: str = Form("hybrid")
-):
-    """সংরক্ষিত RAG মডেল লোড করা"""
-    try:
-        model_path_prefix = os.path.join(MODEL_DIR, f"{filename}")
-        
-        global active_rag
-        active_rag = RAGSystem.load(
-            model_path_prefix, 
-            model_name=model_name,
-            use_llm=use_llm,
-            method=method
-        )
-        
-        return {"status": "success", "message": f"মডেল '{filename}' সফলভাবে লোড হয়েছে"}
+# Playground Page
+elif st.session_state.current_page == "Playground":
+    st.title("RAG Chatbot Playground")
+
+    # Model Selection
+    col1, col2 = st.columns(2)
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"মডেল লোড ত্রুটি: {str(e)}")
-
-@app.post("/query")
-async def query(
-    question: str = Form(...),
-    force_llm: bool = Form(False),
-    k: int = Form(5)
-):
-    """প্রশ্ন জিজ্ঞাসা করা"""
-    try:
-        if active_rag is None:
-            raise HTTPException(status_code=400, detail="কোন সক্রিয় RAG মডেল লোড করা হয়নি")
-        
-        result = active_rag.query(question, k=k, force_llm=force_llm)
-        return {"status": "success", "answer": result}
+    with col1:
+        model_type = st.radio("Select Model Type", ["LLM", "Non-LLM"])
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"প্রশ্ন উত্তর দেওয়ার সময় ত্রুটি: {str(e)}")
+    with col2:
+        if model_type == "LLM":
+            model_name = st.selectbox(
+                "Select LLM Model",
+                ["llama3.2", "gamma", "opencoder:1.5b","chatglm-6b-v2"]
+            )
+        else:
+            model_name = st.selectbox(
+                "Select Method",
+                ["rule", "extractive", "extraction", "tfidf"]
+            )
 
-@app.get("/saved_models")
-async def list_models():
-    """সংরক্ষিত মডেলগুলি তালিকাভুক্ত করা"""
-    try:
-        # ডিরেক্টরিতে উপস্থিত ফাইলগুলি খুঁজে বের করা
-        model_files = {}
-        for filename in os.listdir(MODEL_DIR):
-            if filename.endswith("_documents.json"):
-                model_name = filename.replace("_documents.json", "")
-                model_files[model_name] = os.path.getmtime(os.path.join(MODEL_DIR, filename))
-        
-        # তালিকা সৃষ্টি
-        models = [
-            {"name": name, "created": timestamp}
-            for name, timestamp in model_files.items()
-        ]
-        
-        # সময় অনুযায়ী সাজানো
-        models.sort(key=lambda x: x["created"], reverse=True)
-        
-        return {"status": "success", "models": models}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"মডেল তালিকা আনতে ত্রুটি: {str(e)}")
+    # Display current configuration
+    st.info(f"Current Configuration: {model_type} - {model_name}")
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Chat Interface
+    st.subheader("Chat Interface")
+
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    # Chat input
+    if prompt := st.chat_input("Ask a question about the PDF"):
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+
+        # Get and display assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = get_answer(prompt, model_type, model_name)
+                if "error" in response:
+                    st.error(response["error"])
+                else:
+                    st.write(response["answer"])
+                    st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+
+    # Clear chat button
+    if st.button("Clear Chat"):
+        st.session_state.messages = []
+        st.rerun() 

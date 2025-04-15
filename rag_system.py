@@ -328,7 +328,7 @@ class ExtractiveAnswerGenerator:
         return answer
 
 class RAGSystem:
-    def __init__(self, model_name: str = "deepseek-r1", use_llm: bool = True, method: str = "hybrid"):
+    def __init__(self, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
         self.vector_store = ParallelVectorStore()
         self.templates = ResponseTemplate()
         self.extractor = RuleBasedExtractor()
@@ -811,7 +811,7 @@ class RAGSystem:
         self.vector_store.save(path_prefix)
 
     @classmethod
-    def load(cls, path_prefix: str, model_name: str = "deepseek-chat", use_llm: bool = True, method: str = "hybrid"):
+    def load(cls, path_prefix: str, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
         rag = cls(model_name, use_llm=use_llm, method=method)
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag
