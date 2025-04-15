@@ -1,14 +1,11 @@
-# streamlit_app.py
 import streamlit as st
 import requests
 import time
 import json
-import base64
 from typing import List, Dict
 
 # API endpoint (change to your backend server address)
-API_URL = "http://localhost:8000"
-
+API_URL = "http://localhost:8001"
 def get_available_models() -> List[str]:
     """Fetch available models from the backend API"""
     try:
@@ -95,7 +92,7 @@ def main():
         
         if not st.session_state.document_processed:
             # Document upload
-            uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"])
+            uploaded_file = st.file_uploader("Upload a PDF document", type=["pdf"], disabled=st.session_state.processing)
             
             if uploaded_file is not None:
                 # Model selection
@@ -105,20 +102,23 @@ def main():
                     selected_models = st.multiselect(
                         "Select models to use (you can select multiple)",
                         options=available_models,
-                        default=[available_models[0]]
+                        default=[available_models[0]],
+                        disabled=st.session_state.processing
                     )
                     
-                    if st.button("Process Document", key="process_btn"):
+                    if st.button("Process Document", key="process_btn", disabled=not selected_models or st.session_state.processing):
                         if not selected_models:
                             st.error("Please select at least one model.")
                         else:
-                            with st.spinner("Uploading document..."):
+                            with st.spinner("Uploading and processing document... Please wait."):
                                 result = upload_document(uploaded_file, selected_models)
                                 
                                 if result and "session_id" in result:
                                     st.session_state.session_id = result["session_id"]
                                     st.session_state.processing = True
                                     st.session_state.document_name = uploaded_file.name
+                                    # Trigger rerun to update UI
+                                    st.rerun()
                 else:
                     st.error("Could not fetch available models from the backend.")
         else:
@@ -134,33 +134,36 @@ def main():
                 st.session_state.document_name = None
                 st.session_state.active_models = []
                 st.session_state.query_history = []
-                st.experimental_rerun()
+                st.rerun()
         
         # Display query history
         if st.session_state.query_history:
             st.header("Query History")
             for i, query in enumerate(st.session_state.query_history):
-                if st.button(f"Q: {query[:30]}...", key=f"hist_{i}"):
+                if st.button(f"Q: {query[:30]}...", key=f"hist_{i}", disabled=st.session_state.processing):
                     # Fill the query input with the historical query
                     st.session_state.query_input = query
     
     # Main area for query interface
     if st.session_state.processing:
         # Check processing status
-        status_info = get_session_status(st.session_state.session_id)
+        with st.spinner("Processing document... This may take a moment."):
+            status_info = get_session_status(st.session_state.session_id)
         
         if status_info["status"] == "processing":
             st.info("Document is being processed... Please wait.")
             
             # Auto-refresh
             time.sleep(2)
-            st.experimental_rerun()
+            st.rerun()
             
         elif status_info["status"] == "ready":
             if not st.session_state.document_processed:
                 st.session_state.document_processed = True
                 st.session_state.active_models = status_info["models"]
-                st.success("Document has been successfully processed!")
+                # Show "Training Complete" popup effect
+                st.success("🎉 Document processing complete! You can now ask questions.")
+                st.balloons()  # Celebratory animation
             
             # Query interface
             st.header("Ask questions about your document")
@@ -170,29 +173,32 @@ def main():
                 st.session_state.query_input = ""
             
             # Create query form
-            query = st.text_input(
-                "Enter your question:",
-                value=st.session_state.query_input,
-                key="query_input"
-            )
-            
-            if st.button("Ask", key="query_btn") and query:
-                with st.spinner("Searching document..."):
-                    # Add query to history if it's new
-                    if query not in st.session_state.query_history:
-                        st.session_state.query_history.append(query)
-                    
-                    # Get responses
-                    result = query_document(st.session_state.session_id, query)
-                    
-                    if result and "responses" in result:
-                        # Display responses in tabs
-                        tabs = st.tabs(st.session_state.active_models)
+            with st.form(key="query_form", clear_on_submit=True):
+                query = st.text_input(
+                    "Enter your question:",
+                    value=st.session_state.query_input,
+                    key="query_input",
+                    disabled=not st.session_state.document_processed
+                )
+                submit_button = st.form_submit_button("Ask", disabled=not query)
+                
+                if submit_button and query:
+                    with st.spinner("Searching document..."):
+                        # Add query to history if it's new
+                        if query not in st.session_state.query_history:
+                            st.session_state.query_history.append(query)
                         
-                        for i, model in enumerate(st.session_state.active_models):
-                            with tabs[i]:
-                                response = result["responses"].get(model, "No response received from this model.")
-                                st.markdown(response)
+                        # Get responses
+                        result = query_document(st.session_state.session_id, query)
+                        
+                        if result and "responses" in result:
+                            # Display responses in tabs
+                            tabs = st.tabs(st.session_state.active_models)
+                            
+                            for i, model in enumerate(st.session_state.active_models):
+                                with tabs[i]:
+                                    response = result["responses"].get(model, "No response received from this model.")
+                                    st.markdown(response)
             
             # Display a prompt to ask questions if no query is entered yet
             if not query:
@@ -204,7 +210,7 @@ def main():
             if st.button("Try again", key="retry_btn"):
                 st.session_state.session_id = None
                 st.session_state.processing = False
-                st.experimental_rerun()
+                st.rerun()
     else:
         # Initial page content when no document is being processed
         if not st.session_state.document_processed:
