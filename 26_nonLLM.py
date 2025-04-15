@@ -327,6 +327,7 @@ class ExtractiveAnswerGenerator:
         answer = " ".join([sentence for sentence, _ in top_sentences])
         return answer
 
+
 class RAGSystem:
     def __init__(self, model_name: str = "deepseek-r1", use_llm: bool = True):
         self.vector_store = ParallelVectorStore()
@@ -334,6 +335,7 @@ class RAGSystem:
         self.extractor = RuleBasedExtractor()
         self.extractive_generator = ExtractiveAnswerGenerator()
         self.use_llm = use_llm
+        self.model_name = model_name
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
@@ -361,6 +363,12 @@ class RAGSystem:
         # Relation patterns
         self.extractor.add_entity_pattern("definition", r'(\w+)\s+is\s+defined\s+as\s+([^.]+)')
         self.extractor.add_entity_pattern("comparison", r'compared\s+to\s+(\w+)[,\s]+(\w+)\s+([^.]+)')
+        
+        # Add more rule patterns specific to rule-based approach
+        self.extractor.add_entity_pattern("cause_effect", r'(?:because|due to|as a result of)\s+([^,\.]+)')
+        self.extractor.add_entity_pattern("process_step", r'(?:step|first|second|third|next|finally|lastly)\s+([^,\.]+)')
+        self.extractor.add_entity_pattern("requirement", r'(?:requires|requirement|necessary|needed|must have)\s+([^,\.]+)')
+        self.extractor.add_entity_pattern("benefit", r'(?:benefit|advantage|useful for|helps with)\s+([^,\.]+)')
 
     def get_embedding(self, text: str) -> np.ndarray:
         # Handle empty or very short texts
@@ -582,84 +590,109 @@ class RAGSystem:
             words = question.lower().split()
             return [w for w in words if w not in question_words and len(w) > 3]
 
-    def _generate_non_llm_response(self, question: str, results: List[DocumentEntry]) -> Tuple[str, bool]:
-        """Generate response using non-LLM techniques"""
+    def _generate_rule_based_response(self, question: str, results: List[DocumentEntry]) -> str:
+        """Generate response using rule-based pattern matching and template filling"""
         if not results:
-            return "No relevant information found.", False
+            return "No relevant information found."
             
         question_type = self._classify_question_type(question)
+        question_keywords = self._extract_question_keywords(question)
         
-        # For definition questions, try to extract definitions
+        # 1. Definition questions
         if question_type == "definition":
-            # Extract what's being defined
-            match = re.search(r'(?:what is|define|meaning of|definition of)\s+([^?\.]+)', question.lower())
-            if match:
-                term = match.group(1).strip()
-                
-                # Look for definitions in the results
+            for term in question_keywords:
                 for doc in results:
-                    # Look for patterns like "X is defined as Y" or "X is Y"
-                    definition_patterns = [
-                        rf'{term}\s+is\s+defined\s+as\s+([^\.]+)',
-                        rf'{term}\s+refers\s+to\s+([^\.]+)',
-                        rf'{term}\s+means\s+([^\.]+)',
-                        rf'{term}\s+is\s+(?:a|an|the)\s+([^\.]+)'
+                    # Try different definition patterns
+                    patterns = [
+                        rf'{re.escape(term)}\s+is\s+defined\s+as\s+([^\.]+)',
+                        rf'{re.escape(term)}\s+refers\s+to\s+([^\.]+)',
+                        rf'{re.escape(term)}\s+means\s+([^\.]+)',
+                        rf'{re.escape(term)}\s+is\s+(?:a|an|the)\s+([^\.]+)'
                     ]
                     
-                    for pattern in definition_patterns:
-                        matches = re.search(pattern, doc.text.lower())
-                        if matches:
-                            definition = matches.group(1).strip()
+                    for pattern in patterns:
+                        match = re.search(pattern, doc.text.lower(), re.IGNORECASE)
+                        if match:
+                            definition = match.group(1).strip()
                             return self.templates.generate_response(
-                                "definition", 
-                                entity=term.capitalize(), 
+                                "definition",
+                                entity=term.capitalize(),
                                 definition=definition
-                            ), True
+                            )
         
-        # For list questions, extract bullet points
+        # 2. List questions
         if question_type == "list":
-            # Extract the topic
-            match = re.search(r'(?:list|what are|enumerate)\s+([^?\.]+)', question.lower())
-            topic = match.group(1).strip() if match else ""
+            topic_pattern = r'(?:list|what are|enumerate)\s+([^?\.]+)'
+            topic_match = re.search(topic_pattern, question.lower())
+            topic = topic_match.group(1).strip() if topic_match else ""
             
-            # Extract sentences with list indicators
             list_items = []
             for doc in results:
-                sentences = sent_tokenize(doc.text)
-                for sentence in sentences:
-                    # Look for sentences with list indicators or that contain the topic
-                    if (topic in sentence.lower() or 
-                        any(kw in sentence.lower() for kw in self._extract_question_keywords(question))):
-                        list_items.append(f"• {sentence}")
-                        
-                # Limit to reasonable number of items
-                if len(list_items) >= 5:
-                    break
-                    
+                # Look for bulleted or numbered lists in the text
+                list_pattern = r'(?:•|\*|\d+\.)\s+([^\n]+)'
+                matches = re.findall(list_pattern, doc.text)
+                if matches:
+                    for item in matches[:7]:  # Limit to 7 items
+                        list_items.append(f"• {item}")
+                
+                # If no explicit list found, try to extract sentences that contain topic keywords
+                if not list_items:
+                    sentences = sent_tokenize(doc.text)
+                    for sentence in sentences:
+                        if (topic in sentence.lower() or 
+                            any(kw in sentence.lower() for kw in question_keywords)):
+                            list_items.append(f"• {sentence}")
+                        if len(list_items) >= 7:
+                            break
+            
             if list_items:
                 return self.templates.generate_response(
                     "list",
-                    topic=topic,
-                    items="\n".join(list_items[:7])  # Limit to 7 items
-                ), True
+                    topic=topic or "relevant points",
+                    items="\n".join(list_items[:7])
+                )
         
-        # For summary questions, use extractive summarization
-        if question_type == "summary":
-            # Extract the topic
-            match = re.search(r'(?:summarize|summary of|overview of|brief on|describe)\s+([^?\.]+)', question.lower())
-            topic = match.group(1).strip() if match else ""
+        # 3. Comparison questions
+        if question_type == "comparison":
+            comparison_pattern = r'(?:compare|difference between|versus|vs\.)\s+([^\s]+)\s+(?:and|with|to)\s+([^\s?\.]+)'
+            match = re.search(comparison_pattern, question.lower())
             
-            # Generate extractive summary
-            summary = self.extractive_generator.generate_answer(question, results, max_sentences=5)
-            
-            if summary and summary != "No relevant information found.":
-                return self.templates.generate_response(
-                    "summary",
-                    topic=topic if topic else "the topic",
-                    summary=summary
-                ), True
+            if match:
+                entity1 = match.group(1).strip()
+                entity2 = match.group(2).strip()
+                comparison_points = []
                 
-        # For specific entity extraction (people, dates, locations)
+                for doc in results:
+                    # Look for direct comparison sentences
+                    patterns = [
+                        rf'(?:difference|differences|compared|comparing|versus|vs\.)[^\.]*{re.escape(entity1)}[^\.]*{re.escape(entity2)}([^\.]+)',
+                        rf'{re.escape(entity1)}[^\.]*(?:unlike|while|whereas|but|however)[^\.]*{re.escape(entity2)}([^\.]+)',
+                        rf'{re.escape(entity2)}[^\.]*(?:unlike|while|whereas|but|however)[^\.]*{re.escape(entity1)}([^\.]+)'
+                    ]
+                    
+                    for pattern in patterns:
+                        matches = re.findall(pattern, doc.text.lower(), re.IGNORECASE)
+                        for m in matches:
+                            comparison_points.append(f"• {m.strip()}")
+                    
+                    # If not enough direct comparisons, find sentences mentioning both entities
+                    if len(comparison_points) < 3:
+                        sentences = sent_tokenize(doc.text)
+                        for sentence in sentences:
+                            sentence_lower = sentence.lower()
+                            if entity1 in sentence_lower and entity2 in sentence_lower:
+                                comparison_points.append(f"• {sentence.strip()}")
+                
+                if comparison_points:
+                    comparison_text = "\n".join(set(comparison_points)[:5])  # Remove duplicates
+                    return self.templates.generate_response(
+                        "comparison",
+                        entity1=entity1.capitalize(),
+                        entity2=entity2.capitalize(),
+                        comparison=comparison_text
+                    )
+        
+        # 4. Entity questions (who, when, where)
         if question_type in ["person", "temporal", "location"]:
             entity_types = {
                 "person": ["PERSON", "ORG"],
@@ -667,35 +700,168 @@ class RAGSystem:
                 "location": ["GPE", "LOC"]
             }
             
-            # Extract relevant entities from results
-            relevant_entities = []
-            for doc in results:
-                # Use the pre-extracted entities if available
-                if doc.entities:
-                    for ent_type in entity_types.get(question_type, []):
-                        if ent_type in doc.entities:
-                            relevant_entities.extend(doc.entities[ent_type])
-                            
-            if relevant_entities:
-                # Format response based on question type
-                if question_type == "person":
-                    return f"The relevant people/organizations are: {', '.join(set(relevant_entities)[:5])}", True
-                elif question_type == "temporal":
-                    return f"The relevant dates/times are: {', '.join(set(relevant_entities)[:5])}", True
-                elif question_type == "location":
-                    return f"The relevant locations are: {', '.join(set(relevant_entities)[:5])}", True
-        
-        # Default: Use extractive answer generation
-        answer = self.extractive_generator.generate_answer(question, results)
-        if answer and answer != "No relevant information found.":
-            # Apply template
-            return self.templates.generate_response(
-                "fallback",
-                content=answer
-            ), True
+            target_types = entity_types.get(question_type, [])
+            found_entities = []
+            context_sentences = []
             
-        # No good answer found with non-LLM methods
-        return "", False
+            for doc in results:
+                # Look for entities in the document metadata
+                if doc.entities:
+                    for ent_type in target_types:
+                        if ent_type in doc.entities:
+                            found_entities.extend(doc.entities[ent_type])
+                
+                # Also look for context sentences containing these entities
+                if found_entities:
+                    sentences = sent_tokenize(doc.text)
+                    for sentence in sentences:
+                        if any(entity.lower() in sentence.lower() for entity in found_entities):
+                            if any(kw in sentence.lower() for kw in question_keywords):
+                                context_sentences.append(sentence)
+                                break
+            
+            if found_entities:
+                unique_entities = list(set(found_entities))[:5]  # Limit to top 5 unique entities
+                entities_str = ", ".join(unique_entities)
+                
+                if context_sentences:
+                    context = " ".join(context_sentences[:2])  # Provide some context
+                    return f"Based on the document, {entities_str}. {context}"
+                else:
+                    return f"Based on the document: {entities_str}."
+        
+        # 5. Explanation questions (why, how)
+        if question_type in ["explanation"]:
+            explanation_sentences = []
+            
+            for doc in results:
+                sentences = sent_tokenize(doc.text)
+                for sentence in sentences:
+                    sentence_lower = sentence.lower()
+                    # Look for causal language
+                    if any(marker in sentence_lower for marker in 
+                           ["because", "since", "as a result", "therefore", "thus", 
+                            "hence", "due to", "causes", "caused by", "reason"]):
+                        if any(kw in sentence_lower for kw in question_keywords):
+                            explanation_sentences.append(sentence)
+                
+                # Look for extracted cause-effect relationships
+                cause_effect_entities = self.extractor.extract_entities(doc.text).get("cause_effect", [])
+                if cause_effect_entities:
+                    for entity in cause_effect_entities[:3]:
+                        explanation_sentences.append(f"This occurs because {entity}.")
+            
+            if explanation_sentences:
+                explanation = " ".join(explanation_sentences[:3])
+                return f"Explanation: {explanation}"
+        
+        # 6. Quantity questions (how many, how much)
+        if question_type == "quantity":
+            quantity_pattern = r'(?:how many|how much|count of|number of)\s+([^?\.]+)'
+            match = re.search(quantity_pattern, question.lower())
+            
+            if match:
+                target = match.group(1).strip()
+                for doc in results:
+                    # Look for sentences with numbers and the target
+                    sentences = sent_tokenize(doc.text)
+                    for sentence in sentences:
+                        if target in sentence.lower() and re.search(r'\d+', sentence):
+                            # Extract the number and its context
+                            return f"Based on the document: {sentence}"
+        
+        # 7. Generic response based on most relevant sentences
+        # Fall back to extracting the most relevant sentences
+        relevant_sentences = []
+        for doc in results:
+            sentences = sent_tokenize(doc.text)
+            for sentence in sentences:
+                sentence_lower = sentence.lower()
+                # Check if sentence contains question keywords
+                if any(kw in sentence_lower for kw in question_keywords):
+                    relevant_sentences.append(sentence)
+            
+        if relevant_sentences:
+            # Return the top 3 relevant sentences
+            response = " ".join(relevant_sentences[:3])
+            return f"Based on the document: {response}"
+        
+        # Ultimate fallback
+        return f"Based on the document, I couldn't find specific information about {', '.join(question_keywords)}."
+
+    def _generate_extractive_response(self, question: str, results: List[DocumentEntry]) -> str:
+        """Generate response by extracting and reranking sentences from documents"""
+        if not results:
+            return "No relevant information found."
+        
+        # Extract sentences from all documents
+        all_sentences = []
+        
+        for doc in results:
+            sentences = self.extractive_generator.extract_sentences(doc.text)
+            for sentence in sentences:
+                # Add the sentence with its document info
+                all_sentences.append({
+                    'text': sentence,
+                    'doc_id': doc.id,
+                    'title': doc.title
+                })
+        
+        # Rank sentences by relevance to the query
+        sentence_texts = [s['text'] for s in all_sentences]
+        ranked_sentences = self.extractive_generator.rank_sentences(question, sentence_texts)
+        
+        # Add rank scores back to sentence objects
+        for i, (_, score) in enumerate(ranked_sentences):
+            all_sentences[i]['score'] = score
+        
+        # Sort by score in descending order
+        sorted_sentences = sorted(all_sentences, key=lambda x: x['score'], reverse=True)
+        
+        # Select top sentences (adjust the number as needed)
+        top_n = min(5, len(sorted_sentences))
+        top_sentences = sorted_sentences[:top_n]
+        
+        # Determine the question type to format the response appropriately
+        question_type = self._classify_question_type(question)
+        
+        # Format the response based on question type
+        if question_type == "definition":
+            # For definition questions, prefer sentences that have definition structure
+            definition_sentences = []
+            for sentence in top_sentences:
+                text = sentence['text'].lower()
+                # Look for definition patterns
+                if re.search(r'is defined as|refers to|means|is a|is an|is the', text):
+                    definition_sentences.append(sentence)
+            
+            if definition_sentences:
+                return definition_sentences[0]['text']
+            else:
+                return top_sentences[0]['text']
+                
+        elif question_type == "list":
+            # For list questions, format as bullet points
+            list_items = [f"• {s['text']}" for s in top_sentences]
+            return "\n".join(list_items)
+            
+        elif question_type == "comparison":
+            # For comparison questions, try to find sentences that cover both compared entities
+            question_keywords = self._extract_question_keywords(question)
+            comparison_sentences = []
+            
+            # Check which sentences contain multiple keywords
+            for sentence in top_sentences:
+                text = sentence['text'].lower()
+                keyword_count = sum(1 for kw in question_keywords if kw in text)
+                if keyword_count >= 2:  # Contains at least 2 of the keywords
+                    comparison_sentences.append(sentence)
+            
+            if comparison_sentences:
+                return " ".join([s['text'] for s in comparison_sentences[:3]])
+            
+        # Default: concatenate top sentences
+        return " ".join([s['text'] for s in top_sentences])
 
     def query(self, question: str, k: int = 5, force_llm: bool = False) -> str:
         """
@@ -749,14 +915,8 @@ class RAGSystem:
         # Get final results
         results = keyword_results[:k]
         
-        # Try non-LLM approach first unless forced to use LLM
-        if not force_llm and not self.use_llm:
-            non_llm_response, success = self._generate_non_llm_response(question, results)
-            if success:
-                return non_llm_response
-        
-        # Fall back to LLM if non-LLM failed or if forced to use LLM
-        if self.use_llm:
+        # If LLM is requested and available, use it
+        if force_llm and self.use_llm:
             context = "\n\n".join([
                 f"Section: {doc.title}\nContent: {doc.text[:1000]}..." 
                 for doc in results
@@ -769,9 +929,15 @@ class RAGSystem:
             cleaned_response = self._remove_think_tags(response)
             
             return cleaned_response
+        
+        # Otherwise use the specified non-LLM approach
+        if self.model_name == "rule":
+            return self._generate_rule_based_response(question, results)
+        elif self.model_name == "extractive" or not self.use_llm:
+            return self._generate_extractive_response(question, results)
         else:
-            # If LLM not available, return generic extractive response
-            return self.extractive_generator.generate_answer(question, results)
+            # If LLM was requested but not available, use extractive as fallback
+            return self._generate_extractive_response(question, results)
 
     def save(self, path_prefix: str):
         self.vector_store.save(path_prefix)
@@ -782,24 +948,35 @@ class RAGSystem:
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag
 
+
+
+
 # Usage Example
 if __name__ == "__main__":
     PDF_PATH = "/home/shahanahmed/Documents/pdf1.pdf"  
 
     # Create RAG system with LLM backup
-    rag1 = RAGSystem(model_name="gemma3:latest", use_llm=True)
+    rag1 = RAGSystem(model_name="deepseek-r1", use_llm=True)
     rag1.ingest_pdf(PDF_PATH)
     
-    # Create pure non-LLM RAG system
-    rag2 = RAGSystem(model_name=None, use_llm=False)
+    # Create pure extractive non-LLM RAG system
+    rag2 = RAGSystem(model_name="extractive", use_llm=False)
     rag2.ingest_pdf(PDF_PATH)
     
-    question = "Tell me about the PDF file"
+    # Create pure rule-based non-LLM RAG system
+    rag3 = RAGSystem(model_name="rule", use_llm=False)
+    rag3.ingest_pdf(PDF_PATH)
     
-    # Try non-LLM response first, fallback to LLM
-    print("Hybrid approach (non-LLM with LLM fallback):")
+    question = "Tell me about the document"
+    
+    # Try LLM-based response
+    print("LLM-based approach:")
     print(rag1.query(question))
     
-    # Pure non-LLM approach
-    print("\nPure non-LLM approach:")
+    # Pure extractive non-LLM approach
+    print("\nPure extractive non-LLM approach:")
     print(rag2.query(question))
+    
+    # Pure rule-based non-LLM approach
+    print("\nPure rule-based non-LLM approach:")
+    print(rag3.query(question))
