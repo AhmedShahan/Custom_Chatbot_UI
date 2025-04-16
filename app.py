@@ -71,6 +71,9 @@ with st.sidebar:
 # Training Page
 if st.session_state.current_page == "Training":
     st.title("Document Training")
+    
+    # Document upload section
+    st.subheader("Upload Document")
     uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx"])
     
     if uploaded_file:
