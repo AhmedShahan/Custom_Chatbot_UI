@@ -10,6 +10,9 @@ from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass, asdict, field
 from tenacity import retry, stop_after_attempt, wait_exponential
 from unstructured.partition.pdf import partition_pdf
+from unstructured.partition.pptx import partition_pptx
+from unstructured.partition.docx import partition_docx
+from unstructured.partition.doc import partition_doc
 from unstructured.documents.elements import Title, NarrativeText, Table, Element
 from langchain.llms import Ollama
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -19,6 +22,8 @@ import spacy
 import nltk
 from nltk.tokenize import sent_tokenize
 from string import Template
+import os
+from pptx import Presentation
 
 # Download necessary NLTK resources
 nltk.download('punkt', quiet=True)
@@ -281,17 +286,31 @@ class ExtractiveAnswerGenerator:
     @staticmethod
     def extract_sentences(text: str) -> List[str]:
         """Split text into sentences"""
-        return sent_tokenize(text)
+        if not text or not isinstance(text, str):
+            return []
+        
+        try:
+            sentences = sent_tokenize(text)
+            return [s for s in sentences if s.strip()]  # Filter out empty sentences
+        except Exception as e:
+            print(f"Error extracting sentences: {str(e)}")
+            return []
     
     @staticmethod
     def rank_sentences(query: str, sentences: List[str]) -> List[Tuple[str, float]]:
         """Rank sentences by relevance to query using TF-IDF"""
+        if not sentences or not query:
+            return []
+            
+        # Filter out any empty sentences
+        sentences = [s for s in sentences if s and s.strip()]
+        
         if not sentences:
             return []
             
         # Create TF-IDF vectors for sentences
-        vectorizer = TfidfVectorizer(stop_words='english')
         try:
+            vectorizer = TfidfVectorizer(stop_words='english')
             sentence_vectors = vectorizer.fit_transform(sentences)
             query_vector = vectorizer.transform([query])
             
@@ -300,32 +319,57 @@ class ExtractiveAnswerGenerator:
             
             # Return sentences with their scores
             return [(sentence, score) for sentence, score in zip(sentences, similarities)]
-        except:
+        except Exception as e:
+            print(f"Error ranking sentences: {str(e)}")
             # Handle cases where vectorization fails (e.g., empty sentences)
             return [(sentence, 0.0) for sentence in sentences]
     
     def generate_answer(self, query: str, documents: List[DocumentEntry], 
                         max_sentences: int = 3) -> str:
         """Generate an answer by extracting and combining relevant sentences"""
+        if not documents or not query:
+            return "No relevant information found."
+            
         all_sentences = []
         
         # Extract sentences from all documents
         for doc in documents:
-            sentences = self.extract_sentences(doc.text)
-            all_sentences.extend(sentences)
+            if not hasattr(doc, 'text') or not doc.text:
+                continue
+                
+            try:
+                sentences = self.extract_sentences(doc.text)
+                all_sentences.extend(sentences)
+            except Exception as e:
+                print(f"Error processing document for sentences: {str(e)}")
+                continue
+        
+        if not all_sentences:
+            return "No relevant information found in the documents."
             
         # Rank sentences by relevance
-        ranked_sentences = self.rank_sentences(query, all_sentences)
-        
-        # Select top sentences
-        top_sentences = sorted(ranked_sentences, key=lambda x: x[1], reverse=True)[:max_sentences]
-        
-        # Build answer from top sentences
-        if not top_sentences:
-            return "No relevant information found."
+        try:
+            ranked_sentences = self.rank_sentences(query, all_sentences)
             
-        answer = " ".join([sentence for sentence, _ in top_sentences])
-        return answer
+            # Select top sentences
+            if not ranked_sentences:
+                return "Couldn't extract relevant sentences from the documents."
+                
+            top_sentences = sorted(ranked_sentences, key=lambda x: x[1], reverse=True)
+            
+            # Limit to max_sentences if we have enough
+            if top_sentences:
+                top_sentences = top_sentences[:min(max_sentences, len(top_sentences))]
+            
+            # Build answer from top sentences
+            if not top_sentences:
+                return "No relevant information found."
+                
+            answer = " ".join([sentence for sentence, _ in top_sentences])
+            return answer
+        except Exception as e:
+            print(f"Error generating extractive answer: {str(e)}")
+            return "Encountered an issue while generating an answer from the document."
 
 class RAGSystem:
     def __init__(self, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
@@ -447,45 +491,187 @@ class RAGSystem:
             )
             
             print(f"Found {len(elements)} elements in the PDF")
-
-            # Process all elements maintaining their order
-            processed_content = []
-            current_section = {'title': '', 'text': []}
-            sections_count = 0
-            
-            for i, element in enumerate(elements):
-                try:
-                    if isinstance(element, Title):
-                        if current_section['title'] or current_section['text']:
-                            self._process_section(current_section, pdf_path)
-                            sections_count += 1
-                        current_section = {'title': str(element), 'text': []}
-                        print(f"Found title: {str(element)[:50]}...")
-                    elif isinstance(element, Table):
-                        # Convert table to text and add to current section
-                        table_text = self._convert_table_to_text(element)
-                        current_section['text'].append(table_text)
-                        print(f"Added table content ({len(table_text)} chars)")
-                    elif isinstance(element, NarrativeText):
-                        current_section['text'].append(str(element))
-                        print(f"Added text content ({len(str(element))} chars)")
-                except Exception as e:
-                    print(f"Error processing element {i}: {str(e)}")
-
-            # Process the last section if it exists
-            if current_section['title'] or current_section['text']:
-                self._process_section(current_section, pdf_path)
-                sections_count += 1
-                
-            print(f"Processed {sections_count} sections from the PDF")
-            
-            # Check if documents were added
-            print(f"Total documents in vector store: {len(self.vector_store.documents)}")
+            self._process_elements(elements, pdf_path)
                 
         except Exception as e:
             print(f"Error ingesting PDF: {str(e)}")
             import traceback
             traceback.print_exc()
+    
+    def ingest_ppt(self, ppt_path: str):
+        """
+        Ingest PowerPoint files (.ppt or .pptx)
+        Special handling for PowerPoint slides to ensure proper extraction of content
+        """
+        try:
+            print(f"Ingesting PowerPoint from {ppt_path}")
+            if not os.path.exists(ppt_path):
+                print(f"Error: PowerPoint file not found at {ppt_path}")
+                return
+            
+            # Use appropriate method based on file extension
+            file_extension = os.path.splitext(ppt_path)[1].lower()
+            
+            if file_extension == '.pptx':
+                print("Processing PPTX file...")
+                try:
+                    elements = partition_pptx(
+                        ppt_path,
+                        detect_tables=True,
+                        infer_table_structure=True
+                    )
+                except Exception as e:
+                    print(f"Error partitioning PPTX file: {str(e)}")
+                    # Backup approach if unstructured.partition.pptx fails
+                    elements = self._fallback_pptx_processing(ppt_path)
+            else:  # .ppt file
+                print("Processing PPT file...")
+                print("Warning: Native .ppt files might have limited support. Consider converting to .pptx format.")
+                try:
+                    elements = partition_pptx(
+                        ppt_path,
+                        detect_tables=True,
+                        infer_table_structure=True
+                    )
+                except Exception as e:
+                    print(f"Error partitioning PPT file: {str(e)}")
+                    # Backup approach if the primary method fails
+                    elements = self._fallback_pptx_processing(ppt_path)
+            
+            if not elements:
+                print("Warning: No elements extracted from PowerPoint file")
+                # Create at least one element with the filename as title
+                filename = os.path.basename(ppt_path)
+                elements = [Title(text=f"PowerPoint: {filename}")]
+            
+            print(f"Found {len(elements)} elements in the PowerPoint")
+            
+            # Group elements by slide if possible
+            if hasattr(elements[0], 'metadata') and elements[0].metadata and 'slide_number' in elements[0].metadata:
+                print("Organizing elements by slide...")
+                self._process_slides(elements, ppt_path)
+            else:
+                # Fallback to regular processing
+                print("Processing elements without slide organization...")
+                self._process_elements(elements, ppt_path)
+                
+        except Exception as e:
+            print(f"Error ingesting PowerPoint: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _fallback_pptx_processing(self, ppt_path: str) -> List[Element]:
+        """Fallback method to extract content from PowerPoint files if the partition_pptx fails"""
+        try:
+            print("Using fallback method for PowerPoint processing...")
+            prs = Presentation(ppt_path)
+            
+            elements = []
+            
+            # Process each slide
+            for slide_number, slide in enumerate(prs.slides, 1):
+                # Add slide title
+                if slide.shapes.title and slide.shapes.title.text:
+                    title_text = slide.shapes.title.text
+                    title = Title(text=title_text)
+                    title.metadata = {"slide_number": slide_number}
+                    elements.append(title)
+                
+                # Process all shapes/text boxes
+                slide_text = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text:
+                        # Skip if it's the title we already added
+                        if shape == slide.shapes.title:
+                            continue
+                        slide_text.append(shape.text)
+                
+                # Add text content
+                if slide_text:
+                    slide_content = "\n".join(slide_text)
+                    text_element = NarrativeText(text=slide_content)
+                    text_element.metadata = {"slide_number": slide_number}
+                    elements.append(text_element)
+                    
+            return elements
+        except Exception as e:
+            print(f"Error in fallback PowerPoint processing: {str(e)}")
+            # Return an empty list on failure
+            return []
+
+    def _process_slides(self, elements: List[Element], source_path: str):
+        """Process PowerPoint elements grouped by slide"""
+        slides = {}
+        
+        # Group elements by slide number
+        for element in elements:
+            if hasattr(element, 'metadata') and element.metadata and 'slide_number' in element.metadata:
+                slide_number = element.metadata['slide_number']
+                if slide_number not in slides:
+                    slides[slide_number] = {'title': '', 'text': []}
+                
+                # Extract title and content
+                if isinstance(element, Title):
+                    slides[slide_number]['title'] = str(element)
+                elif isinstance(element, NarrativeText):
+                    slides[slide_number]['text'].append(str(element))
+                elif isinstance(element, Table):
+                    table_text = self._convert_table_to_text(element)
+                    slides[slide_number]['text'].append(table_text)
+        
+        # Process each slide as a section
+        sections_count = 0
+        for slide_number, content in slides.items():
+            if not content['title'] and not content['text']:
+                continue
+            
+            # Use slide number in title if no title exists
+            if not content['title']:
+                content['title'] = f"Slide {slide_number}"
+            
+            self._process_section(content, source_path)
+            sections_count += 1
+        
+        print(f"Processed {sections_count} slides from the PowerPoint presentation")
+        
+        # Check if documents were added
+        print(f"Total documents in vector store: {len(self.vector_store.documents)}")
+
+    def _process_elements(self, elements, source_path):
+        """Common processing for all document types."""
+        # Process all elements maintaining their order
+        processed_content = []
+        current_section = {'title': '', 'text': []}
+        sections_count = 0
+        
+        for i, element in enumerate(elements):
+            try:
+                if isinstance(element, Title):
+                    if current_section['title'] or current_section['text']:
+                        self._process_section(current_section, source_path)
+                        sections_count += 1
+                    current_section = {'title': str(element), 'text': []}
+                    print(f"Found title: {str(element)[:50]}...")
+                elif isinstance(element, Table):
+                    # Convert table to text and add to current section
+                    table_text = self._convert_table_to_text(element)
+                    current_section['text'].append(table_text)
+                    print(f"Added table content ({len(table_text)} chars)")
+                elif isinstance(element, NarrativeText):
+                    current_section['text'].append(str(element))
+                    print(f"Added text content ({len(str(element))} chars)")
+            except Exception as e:
+                print(f"Error processing element {i}: {str(e)}")
+
+        # Process the last section if it exists
+        if current_section['title'] or current_section['text']:
+            self._process_section(current_section, source_path)
+            sections_count += 1
+            
+        print(f"Processed {sections_count} sections from the document")
+        
+        # Check if documents were added
+        print(f"Total documents in vector store: {len(self.vector_store.documents)}")
 
     def _process_section(self, section: Dict, source: str):
         try:
@@ -714,98 +900,132 @@ class RAGSystem:
         Returns:
             The answer to the question
         """
-        # Extract keywords from the question
-        question_keywords = self._extract_question_keywords(question)
-        
-        # First try keyword search for exact matches
-        keyword_results = self.vector_store.keyword_search(question_keywords, k=k)
-        
-        # If not enough results, try TF-IDF search
-        if len(keyword_results) < k:
-            tfidf_results = self.vector_store.tfidf_search(question, k=k)
+        try:
+            # Extract keywords from the question
+            question_keywords = self._extract_question_keywords(question)
             
-            # Combine results without duplicates
-            seen_ids = set(doc.id for doc in keyword_results)
-            for doc in tfidf_results:
-                if doc.id not in seen_ids:
-                    keyword_results.append(doc)
-                    seen_ids.add(doc.id)
-                    if len(keyword_results) >= k:
-                        break
-        
-        # If still not enough, use embedding search
-        if len(keyword_results) < k:
-            query_embedding = self.get_embedding(question)
-            embedding_results = self.vector_store.search(query_embedding, k=k)
+            # First try keyword search for exact matches
+            keyword_results = self.vector_store.keyword_search(question_keywords, k=k)
             
-            # Combine results without duplicates
-            seen_ids = set(doc.id for doc in keyword_results)
-            for doc in embedding_results:
-                if doc.id not in seen_ids:
-                    keyword_results.append(doc)
-                    seen_ids.add(doc.id)
-                    if len(keyword_results) >= k:
-                        break
-        
-        # Get final results
-        results = keyword_results[:k]
-        
-        # Choose method based on configuration
-        if self.method == "rule" and not force_llm:
-            # Rule-based approach
-            non_llm_response, success = self._generate_non_llm_response(question, results)
-            if success:
-                return non_llm_response
-            return "No relevant rule-based answer found."
+            # If not enough results, try TF-IDF search
+            if len(keyword_results) < k:
+                try:
+                    tfidf_results = self.vector_store.tfidf_search(question, k=k)
+                    
+                    # Combine results without duplicates
+                    seen_ids = set(doc.id for doc in keyword_results)
+                    for doc in tfidf_results:
+                        if doc.id not in seen_ids:
+                            keyword_results.append(doc)
+                            seen_ids.add(doc.id)
+                            if len(keyword_results) >= k:
+                                break
+                except Exception as e:
+                    print(f"Error in TF-IDF search: {str(e)}")
             
-        elif self.method == "extractive" and not force_llm:
-            # Pure extractive approach
-            return self.extractive_generator.generate_answer(question, results)
+            # If still not enough, use embedding search
+            if len(keyword_results) < k:
+                try:
+                    query_embedding = self.get_embedding(question)
+                    embedding_results = self.vector_store.search(query_embedding, k=k)
+                    
+                    # Combine results without duplicates
+                    seen_ids = set(doc.id for doc in keyword_results)
+                    for doc in embedding_results:
+                        if doc.id not in seen_ids:
+                            keyword_results.append(doc)
+                            seen_ids.add(doc.id)
+                            if len(keyword_results) >= k:
+                                break
+                except Exception as e:
+                    print(f"Error in embedding search: {str(e)}")
             
-        elif self.method == "extraction" and not force_llm:
-            # Entity extraction approach - extract entities and present them
-            all_entities = {}
-            for doc in results:
-                for entity_type, entities in doc.entities.items():
-                    if entity_type not in all_entities:
-                        all_entities[entity_type] = set()
-                    all_entities[entity_type].update(entities)
+            # Get final results (safely)
+            results = keyword_results[:min(k, len(keyword_results))]
             
-            if all_entities:
-                response_parts = ["Key information extracted from the documents:"]
-                for entity_type, entities in all_entities.items():
-                    if len(entities) > 0:
-                        entity_list = ", ".join(list(entities)[:5])
-                        response_parts.append(f"{entity_type}: {entity_list}")
+            # If no results found at all, return a user-friendly message
+            if not results:
+                return "I couldn't find any relevant information in the document to answer your question. Please try asking something else about the content of the document."
+            
+            # Choose method based on configuration
+            if self.method == "rule" and not force_llm:
+                # Rule-based approach
+                non_llm_response, success = self._generate_non_llm_response(question, results)
+                if success:
+                    return non_llm_response
+                return "No relevant rule-based answer found."
+            
+            elif self.method == "extractive" and not force_llm:
+                # Pure extractive approach
+                try:
+                    return self.extractive_generator.generate_answer(question, results)
+                except Exception as e:
+                    print(f"Error in extractive generation: {str(e)}")
+                    return "I couldn't generate an answer using the extractive method. Please try a different approach."
+            
+            elif self.method == "extraction" and not force_llm:
+                # Entity extraction approach - extract entities and present them
+                all_entities = {}
+                for doc in results:
+                    # Check if entities dictionary exists
+                    if hasattr(doc, 'entities') and doc.entities:
+                        for entity_type, entities in doc.entities.items():
+                            if entity_type not in all_entities:
+                                all_entities[entity_type] = set()
+                            all_entities[entity_type].update(entities)
                 
-                return "\n".join(response_parts)
-            return "No relevant entities found in the documents."
+                if all_entities:
+                    response_parts = ["Key information extracted from the documents:"]
+                    for entity_type, entities in all_entities.items():
+                        if len(entities) > 0:
+                            entity_list = ", ".join(list(entities)[:5])
+                            response_parts.append(f"{entity_type}: {entity_list}")
+                
+                    return "\n".join(response_parts)
+                return "No relevant entities found in the documents."
             
-        elif self.method == "tfidf" and not force_llm:
-            # TF-IDF based approach - use only TF-IDF search and return matching docs
-            tfidf_results = self.vector_store.tfidf_search(question, k=k)
-            if tfidf_results:
-                top_result = tfidf_results[0]
-                return f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
-            return "No relevant documents found using TF-IDF search."
+            elif self.method == "tfidf" and not force_llm:
+                # TF-IDF based approach - use only TF-IDF search and return matching docs
+                try:
+                    tfidf_results = self.vector_store.tfidf_search(question, k=k)
+                    if tfidf_results and len(tfidf_results) > 0:
+                        top_result = tfidf_results[0]
+                        return f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
+                    return "No relevant documents found using TF-IDF search."
+                except Exception as e:
+                    print(f"Error in TF-IDF search processing: {str(e)}")
+                    return "Error processing TF-IDF search results."
             
-        elif self.use_llm:
-            # Hybrid approach with LLM
-            context = "\n\n".join([
-                f"Section: {doc.title}\nContent: {doc.text[:1000]}..." 
-                for doc in results
-            ])
-    
-            prompt = f"Answer the question using the provided context\n\nContext:\n{context}\n\nQuestion: {question} Just Answer"
-            response = self.generation_model(prompt)
+            elif self.use_llm:
+                # Hybrid approach with LLM
+                try:
+                    context = "\n\n".join([
+                        f"Section: {doc.title}\nContent: {doc.text[:1000]}..." 
+                        for doc in results
+                    ])
             
-            # Remove <think> tags from the response
-            cleaned_response = self._remove_think_tags(response)
-            
-            return cleaned_response
-        else:
-            # Default to extractive if no method matched
-            return self.extractive_generator.generate_answer(question, results)
+                    prompt = f"Answer the question using the provided context\n\nContext:\n{context}\n\nQuestion: {question} Just Answer"
+                    response = self.generation_model(prompt)
+                    
+                    # Remove <think> tags from the response
+                    cleaned_response = self._remove_think_tags(response)
+                    
+                    return cleaned_response
+                except Exception as e:
+                    print(f"Error generating LLM response: {str(e)}")
+                    return "I encountered an issue generating a response. Please try again or use a different approach."
+            else:
+                # Default to extractive if no method matched
+                try:
+                    return self.extractive_generator.generate_answer(question, results)
+                except Exception as e:
+                    print(f"Error in default extractive generation: {str(e)}")
+                    return "I couldn't generate an answer using the extractive method. Please try a different approach."
+        except Exception as e:
+            print(f"Unexpected error in query processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return "I encountered an unexpected error while processing your question. Please try again with a different question."
 
     def save(self, path_prefix: str):
         self.vector_store.save(path_prefix)
@@ -816,16 +1036,66 @@ class RAGSystem:
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag
 
+    def ingest_doc(self, doc_path: str):
+        """Ingest Word documents (.doc or .docx)"""
+        try:
+            print(f"Ingesting Word document from {doc_path}")
+            if not os.path.exists(doc_path):
+                print(f"Error: Word document not found at {doc_path}")
+                return
+            
+            # Use appropriate method based on file extension
+            file_extension = os.path.splitext(doc_path)[1].lower()
+            
+            if file_extension == '.docx':
+                elements = partition_docx(
+                    doc_path,
+                    detect_tables=True,
+                    infer_table_structure=True
+                )
+            else:  # For .doc files
+                elements = partition_doc(
+                    doc_path,
+                    detect_tables=True,
+                    infer_table_structure=True
+                )
+            
+            if not elements:
+                print("Warning: No elements extracted from Word document")
+                # Create at least one element with the filename as title
+                filename = os.path.basename(doc_path)
+                elements = [Title(text=f"Document: {filename}")]
+            
+            print(f"Found {len(elements)} elements in the Word document")
+            self._process_elements(elements, doc_path)
+            
+        except Exception as e:
+            print(f"Error ingesting Word document: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
 # Usage Example
 if __name__ == "__main__":
-    PDF_PATH = "/home/shahanahmed/Documents/pdf1.pdf"  
+    # Example paths for different document types
+    PDF_PATH = "/home/shahanahmed/Documents/pdf1.pdf"
+    PPTX_PATH = "/home/shahanahmed/Documents/presentation.pptx"
+    DOCX_PATH = "/home/shahanahmed/Documents/document.docx"
 
-    # Create a single RAG system and ingest the PDF
+    # Create a RAG system
     rag = RAGSystem(model_name="gemma3:latest", use_llm=True, method="hybrid")
-    rag.ingest_pdf(PDF_PATH)
     
-    # Set up different queries using different methods
-    question = "Tell me about India"
+    # Choose which file type to process
+    document_type = "pdf"  # Change to "pptx" or "docx" to test other document types
+    
+    if document_type == "pdf":
+        rag.ingest_pdf(PDF_PATH)
+    elif document_type == "pptx":
+        rag.ingest_ppt(PPTX_PATH) 
+    elif document_type == "docx":
+        rag.ingest_doc(DOCX_PATH)
+    
+    # Test with a sample question
+    question = "Tell me about the document"
     
     # Hybrid approach
     print("Hybrid approach (non-LLM with LLM fallback):")

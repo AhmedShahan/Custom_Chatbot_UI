@@ -11,13 +11,23 @@ if "messages" not in st.session_state:
 if "current_page" not in st.session_state:
     st.session_state.current_page = "Training"
 if "pdf_processed" not in st.session_state:
-    st.session_state.pdf_processed = False
+    st.session_state.document_processed = False
 
-def upload_pdf(file):
-    """Upload PDF to backend"""
-    files = {"file": file}
-    response = requests.post("http://localhost:8000/upload-pdf", files=files)
-    return response.json()
+def upload_document(file):
+    """Upload document to backend"""
+    try:
+        files = {"file": file}
+        response = requests.post("http://localhost:8000/upload-document", files=files)
+        response.raise_for_status()  # Raise an exception for 4XX/5XX responses
+        
+        try:
+            return response.json()
+        except ValueError as e:
+            # Handle case where response is not valid JSON
+            return {"error": f"Invalid server response: {response.text[:100]}..."}
+    except requests.RequestException as e:
+        # Handle network-related errors
+        return {"error": f"Request failed: {str(e)}"}
 
 def get_answer(question, model_type, model_name):
     """Get answer from backend"""
@@ -37,23 +47,26 @@ with st.sidebar:
     if st.button("Training Page"):
         st.session_state.current_page = "Training"
     if st.button("Playground"):
-        if not st.session_state.pdf_processed:
-            st.error("Please process a PDF first!")
+        if not st.session_state.document_processed:
+            st.error("Please process a document first!")
         else:
             st.session_state.current_page = "Playground"
 
 # Training Page
 if st.session_state.current_page == "Training":
-    st.title("PDF Training")
-    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    st.title("Document Training")
+    uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx"])
     
     if uploaded_file:
-        if st.button("Process PDF"):
-            with st.spinner("Processing PDF..."):
-                result = upload_pdf(uploaded_file)
-                st.success(result["message"])
-                st.session_state.pdf_processed = True
-                st.session_state.current_page = "Playground"
+        if st.button("Process Document"):
+            with st.spinner(f"Processing {uploaded_file.name}..."):
+                result = upload_document(uploaded_file)
+                if "error" in result:
+                    st.error(result["error"])
+                else:
+                    st.success(result["message"])
+                    st.session_state.document_processed = True
+                    st.session_state.current_page = "Playground"
 
 # Playground Page
 elif st.session_state.current_page == "Playground":
@@ -89,7 +102,7 @@ elif st.session_state.current_page == "Playground":
             st.write(message["content"])
 
     # Chat input
-    if prompt := st.chat_input("Ask a question about the PDF"):
+    if prompt := st.chat_input("Ask a question about the document"):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):

@@ -17,22 +17,49 @@ app.add_middleware(
 # Global RAG system instance
 rag_system = None
 
-@app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...)):
+@app.post("/upload-document")
+async def upload_document(file: UploadFile = File(...)):
     global rag_system
     
+    # Get file extension
+    file_extension = file.filename.split(".")[-1].lower()
+    
+    # Determine the appropriate directory based on file type
+    if file_extension == "pdf":
+        save_dir = "uploads/pdf"
+    elif file_extension in ["ppt", "pptx"]:
+        save_dir = "uploads/ppt"
+    elif file_extension in ["doc", "docx"]:
+        save_dir = "uploads/doc"
+    else:
+        return {"error": f"Unsupported file format: {file_extension}"}
+    
     # Save the uploaded file
-    file_path = f"uploads/{file.filename}"
-    os.makedirs("uploads", exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
+    file_path = f"{save_dir}/{file.filename}"
     
     with open(file_path, "wb") as f:
         f.write(await file.read())
     
     # Initialize RAG system (with default settings for initial load)
     rag_system = RAGSystem(model_name="deepseek-r1:14b", use_llm=True, method="hybrid")
-    rag_system.ingest_pdf(file_path)
     
-    return {"message": "PDF uploaded and processed successfully"}
+    # Process the file based on its extension
+    if file_extension == "pdf":
+        rag_system.ingest_pdf(file_path)
+    elif file_extension in ["ppt", "pptx"]:
+        rag_system.ingest_ppt(file_path)
+    elif file_extension in ["doc", "docx"]:
+        rag_system.ingest_doc(file_path)
+    else:
+        return {"error": f"Unsupported file format: {file_extension}"}
+    
+    return {"message": f"Document uploaded and processed successfully"}
+
+# Keep the old endpoint for backward compatibility
+@app.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    return await upload_document(file)
 
 @app.post("/ask")
 async def ask_question(
@@ -43,7 +70,7 @@ async def ask_question(
     global rag_system
     
     if rag_system is None:
-        return {"error": "Please upload a PDF first"}
+        return {"error": "Please upload a document first"}
     
     try:
         # Configure RAG system based on selection
