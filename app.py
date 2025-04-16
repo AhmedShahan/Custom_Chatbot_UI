@@ -74,7 +74,7 @@ if st.session_state.current_page == "Training":
     
     # Document upload section
     st.subheader("Upload Document")
-    uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx"])
+    uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx", "csv", "xls", "xlsx"])
     
     if uploaded_file:
         if st.button("Process Document"):

@@ -34,6 +34,11 @@ import io
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from PyPDF2 import PdfWriter, PdfReader
+from fpdf import FPDF
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+from reportlab.lib.units import inch
 
 # Download necessary NLTK resources
 nltk.download('punkt', quiet=True)
@@ -529,7 +534,7 @@ class RAGSystem:
             
             # Create output file path with same name but .pdf extension
             pdf_filename = file_path.stem + ".pdf"
-            output_dir = os.path.join(os.path.dirname(ppt_path), "../pdf")
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(ppt_path)), "pdf")
             os.makedirs(output_dir, exist_ok=True)
             pdf_path = os.path.join(output_dir, pdf_filename)
             
@@ -594,7 +599,7 @@ class RAGSystem:
             
             # Create output file path with same name but .pdf extension
             pdf_filename = os.path.splitext(os.path.basename(ppt_path))[0] + ".pdf"
-            output_dir = os.path.join(os.path.dirname(ppt_path), "../pdf")
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(ppt_path)), "pdf")
             os.makedirs(output_dir, exist_ok=True)
             pdf_path = os.path.join(output_dir, pdf_filename)
             
@@ -1518,6 +1523,145 @@ class RAGSystem:
             print(f"Error ingesting Word document: {str(e)}")
             import traceback
             traceback.print_exc()
+
+    def ingest_spreadsheet(self, file_path: str) -> bool:
+        """
+        Ingest CSV or XLSX file by converting to PDF and then processing the PDF
+        Returns True if processing was successful, False otherwise
+        """
+        try:
+            print(f"Ingesting spreadsheet from {file_path}")
+            
+            # Convert spreadsheet to PDF using a simpler, more direct approach
+            pdf_path = self._convert_spreadsheet_to_pdf(file_path)
+            
+            if pdf_path and os.path.exists(pdf_path):
+                print(f"Successfully converted to PDF: {pdf_path}")
+                # Process the PDF file
+                self.ingest_pdf(pdf_path)
+                # Check if we successfully processed the document
+                success = len(self.vector_store.documents) > 0
+                if success:
+                    print(f"Successfully processed spreadsheet as PDF with {len(self.vector_store.documents)} sections")
+                    return True
+                else:
+                    print("Spreadsheet to PDF conversion succeeded but no content was extracted")
+            else:
+                print("Failed to convert spreadsheet to PDF")
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error ingesting spreadsheet: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _convert_spreadsheet_to_pdf(self, file_path: str) -> str:
+        """
+        Convert CSV or XLSX file to PDF using reportlab (handles Unicode characters)
+        Returns the path to the created PDF file or None if conversion failed
+        """
+        try:
+            import pandas as pd
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import letter, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib.units import inch
+            
+            print(f"Starting spreadsheet to PDF conversion for {file_path}")
+            
+            # Create output path
+            pdf_filename = os.path.splitext(os.path.basename(file_path))[0] + ".pdf"
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(file_path)), "pdf")
+            os.makedirs(output_dir, exist_ok=True)
+            pdf_path = os.path.join(output_dir, pdf_filename)
+            
+            print(f"Output PDF will be saved to: {pdf_path}")
+            
+            # Determine file type and load accordingly
+            file_ext = os.path.splitext(file_path)[-1].lower()
+            if file_ext == '.csv':
+                print(f"Reading CSV file: {file_path}")
+                df = pd.read_csv(file_path)
+            elif file_ext in ['.xls', '.xlsx']:
+                print(f"Reading Excel file: {file_path}")
+                df = pd.read_excel(file_path, engine='openpyxl')
+            else:
+                raise ValueError(f"Unsupported file format: {file_ext}. Please provide a CSV or Excel file.")
+            
+            print(f"Successfully loaded dataframe with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Limit the number of rows to prevent huge files
+            max_rows = min(1000, len(df))
+            if max_rows < len(df):
+                print(f"Limiting output to {max_rows} rows out of {len(df)}")
+                df = df.iloc[:max_rows]
+            
+            # Convert DataFrame to a list of lists
+            data = [df.columns.tolist()]  # Header row
+            for i, row in df.iterrows():
+                # Convert each cell to a string, handling any Unicode characters
+                row_data = []
+                for item in row:
+                    if pd.isna(item):
+                        row_data.append('')
+                    else:
+                        # Truncate very long cell values
+                        item_str = str(item)
+                        if len(item_str) > 100:
+                            item_str = item_str[:97] + '...'
+                        row_data.append(item_str)
+                data.append(row_data)
+            
+            # Create PDF
+            doc = SimpleDocTemplate(
+                pdf_path,
+                pagesize=landscape(letter),
+                rightMargin=0.5*inch,
+                leftMargin=0.5*inch,
+                topMargin=0.5*inch,
+                bottomMargin=0.5*inch
+            )
+            
+            # Calculate column widths (distribute evenly with a maximum)
+            num_cols = len(data[0])
+            available_width = landscape(letter)[0] - inch  # Adjust for margins
+            col_width = min(1.5*inch, available_width / num_cols)
+            col_widths = [col_width] * num_cols
+            
+            # Create the table
+            table = Table(data, colWidths=col_widths)
+            
+            # Add style to the table
+            style = TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ])
+            table.setStyle(style)
+            
+            # Build the PDF document
+            elements = [table]
+            print(f"Building PDF document...")
+            doc.build(elements)
+            
+            if os.path.exists(pdf_path):
+                print(f"PDF successfully created at: {pdf_path}")
+                return pdf_path
+            else:
+                print(f"Error: PDF file was not created at {pdf_path}")
+                return None
+            
+        except Exception as e:
+            print(f"Error converting spreadsheet to PDF: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 # Usage Example
 if __name__ == "__main__":
