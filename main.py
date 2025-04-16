@@ -41,20 +41,45 @@ async def upload_document(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(await file.read())
     
+    print(f"\n\n{'='*50}")
+    print(f"Processing document: {file.filename}")
+    print(f"{'='*50}")
+    
     # Initialize RAG system (with default settings for initial load)
     rag_system = RAGSystem(model_name="deepseek-r1:14b", use_llm=True, method="hybrid")
     
     # Process the file based on its extension
-    if file_extension == "pdf":
-        rag_system.ingest_pdf(file_path)
-    elif file_extension in ["ppt", "pptx"]:
-        rag_system.ingest_ppt(file_path)
-    elif file_extension in ["doc", "docx"]:
-        rag_system.ingest_doc(file_path)
-    else:
-        return {"error": f"Unsupported file format: {file_extension}"}
+    success = False
+    try:
+        if file_extension == "pdf":
+            rag_system.ingest_pdf(file_path)
+            success = True
+        elif file_extension in ["ppt", "pptx"]:
+            # Use our improved PPT processing method that converts to PDF first
+            success = rag_system.ingest_ppt(file_path)
+        elif file_extension in ["doc", "docx"]:
+            rag_system.ingest_doc(file_path)
+            success = True
+        else:
+            return {"error": f"Unsupported file format: {file_extension}"}
+    except Exception as e:
+        import traceback
+        print(f"Error processing document: {str(e)}")
+        traceback.print_exc()
+        return {"error": f"Error processing document: {str(e)}"}
     
-    return {"message": f"Document uploaded and processed successfully"}
+    # Check if any documents were successfully added
+    doc_count = len(rag_system.vector_store.documents)
+    
+    if success and doc_count > 0:
+        print(f"Document processed successfully with {doc_count} sections")
+        return {
+            "message": f"Document uploaded and processed successfully", 
+            "doc_count": doc_count
+        }
+    else:
+        print("Document processing failed or no content extracted")
+        return {"error": f"Document was saved but processing failed. Please try a different file or format."}
 
 # Keep the old endpoint for backward compatibility
 @app.post("/upload-pdf")
@@ -88,6 +113,36 @@ async def ask_question(
         return {"answer": answer}
     except Exception as e:
         return {"error": f"Error processing question: {str(e)}"}
+
+@app.get("/document-status")
+async def document_status():
+    """Get information about the currently loaded document"""
+    global rag_system
+    
+    if rag_system is None:
+        return {"status": "No document loaded"}
+        
+    doc_count = len(rag_system.vector_store.documents)
+    
+    # Get summary of the documents
+    doc_summary = []
+    if doc_count > 0:
+        for i, (doc_id, doc) in enumerate(rag_system.vector_store.documents.items()):
+            summary = {
+                "id": doc_id[:8],  # Shortened ID
+                "title": doc.title[:50] + "..." if len(doc.title) > 50 else doc.title,
+                "text_length": len(doc.text),
+                "keywords": doc.keywords[:5] if doc.keywords else []
+            }
+            doc_summary.append(summary)
+            if i >= 9:  # Limit to 10 documents for the response
+                break
+    
+    return {
+        "status": "Document loaded",
+        "document_count": doc_count,
+        "documents": doc_summary
+    }
 
 if __name__ == "__main__":
     import uvicorn

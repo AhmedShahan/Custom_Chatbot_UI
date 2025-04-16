@@ -24,6 +24,9 @@ from nltk.tokenize import sent_tokenize
 from string import Template
 import os
 from pptx import Presentation
+import subprocess
+import tempfile
+from pathlib import Path
 
 # Download necessary NLTK resources
 nltk.download('punkt', quiet=True)
@@ -481,6 +484,9 @@ class RAGSystem:
             return f"Table content: {str(table)}"
 
     def ingest_pdf(self, pdf_path: str):
+        """
+        Ingest PDF file and extract content
+        """
         try:
             print(f"Ingesting PDF from {pdf_path}")
             elements = partition_pdf(
@@ -497,111 +503,380 @@ class RAGSystem:
             print(f"Error ingesting PDF: {str(e)}")
             import traceback
             traceback.print_exc()
+
+    def _convert_ppt_to_pdf(self, ppt_path: str) -> str:
+        """
+        Convert PPT/PPTX to PDF using LibreOffice
+        Returns the path to the generated PDF file
+        """
+        try:
+            print(f"Converting PowerPoint file to PDF: {ppt_path}")
+            
+            # Create a temporary directory for the output
+            temp_dir = tempfile.mkdtemp()
+            
+            # Get the filename without extension
+            file_name = Path(ppt_path).stem
+            
+            # Output PDF file path
+            pdf_path = os.path.join(temp_dir, f"{file_name}.pdf")
+            
+            # Command to convert using LibreOffice
+            cmd = [
+                'soffice', 
+                '--headless', 
+                '--convert-to', 'pdf', 
+                '--outdir', temp_dir, 
+                ppt_path
+            ]
+            
+            # Execute the command
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = process.communicate()
+            
+            # Check if conversion was successful
+            if process.returncode != 0:
+                print(f"Error converting PPT to PDF: {stderr.decode('utf-8')}")
+                return None
+                
+            print(f"Successfully converted PowerPoint to PDF: {pdf_path}")
+            return pdf_path
+            
+        except Exception as e:
+            print(f"Error in PPT to PDF conversion: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def ingest_ppt(self, ppt_path: str):
         """
         Ingest PowerPoint files (.ppt or .pptx)
-        Special handling for PowerPoint slides to ensure proper extraction of content
+        Now converts PowerPoint to PDF first, then processes the PDF 
         """
         try:
             print(f"Ingesting PowerPoint from {ppt_path}")
             if not os.path.exists(ppt_path):
                 print(f"Error: PowerPoint file not found at {ppt_path}")
-                return
+                return False
+
+            # First convert the PPT file to PDF
+            pdf_path = self._convert_ppt_to_pdf(ppt_path)
+            
+            if pdf_path and os.path.exists(pdf_path):
+                print(f"Processing PowerPoint as PDF: {pdf_path}")
+                # Use the PDF ingestion method since it works well
+                self.ingest_pdf(pdf_path)
+                
+                # Check if documents were added
+                doc_count = len(self.vector_store.documents)
+                if doc_count > 0:
+                    print(f"Successfully processed PowerPoint as PDF with {doc_count} sections")
+                    return True
+                
+            # If PDF conversion fails or no documents were extracted, try the original methods
+            print("PDF conversion failed or no content extracted. Trying original PPT processing...")
             
             # Use appropriate method based on file extension
             file_extension = os.path.splitext(ppt_path)[1].lower()
             
-            if file_extension == '.pptx':
-                print("Processing PPTX file...")
-                try:
-                    elements = partition_pptx(
-                        ppt_path,
-                        detect_tables=True,
-                        infer_table_structure=True
-                    )
-                except Exception as e:
-                    print(f"Error partitioning PPTX file: {str(e)}")
-                    # Backup approach if unstructured.partition.pptx fails
-                    elements = self._fallback_pptx_processing(ppt_path)
-            else:  # .ppt file
-                print("Processing PPT file...")
-                print("Warning: Native .ppt files might have limited support. Consider converting to .pptx format.")
-                try:
-                    elements = partition_pptx(
-                        ppt_path,
-                        detect_tables=True,
-                        infer_table_structure=True
-                    )
-                except Exception as e:
-                    print(f"Error partitioning PPT file: {str(e)}")
-                    # Backup approach if the primary method fails
-                    elements = self._fallback_pptx_processing(ppt_path)
+            # Try the fallback method as it's more reliable for direct PPT extraction
+            print("Trying direct Python-PPTX extraction...")
+            elements = self._fallback_pptx_processing(ppt_path)
             
-            if not elements:
+            # Only if fallback doesn't produce enough elements, try the unstructured library
+            if not elements or len(elements) < 2:
+                print("Fallback produced insufficient elements, trying unstructured library...")
+                try:
+                    if file_extension == '.pptx':
+                        elements = partition_pptx(
+                            ppt_path,
+                            detect_tables=True,
+                            infer_table_structure=True
+                        )
+                    else:  # For .ppt files
+                        print("Warning: Using pptx parser for .ppt file (limited support)")
+                        elements = partition_pptx(
+                            ppt_path,
+                            detect_tables=True,
+                            infer_table_structure=True
+                        )
+                except Exception as e:
+                    print(f"Error using unstructured library for PowerPoint: {str(e)}")
+                    # If already attempted fallback, continue with whatever elements we have
+            
+            # Ensure we have at least some elements
+            if not elements or len(elements) == 0:
                 print("Warning: No elements extracted from PowerPoint file")
-                # Create at least one element with the filename as title
+                # Create a minimal element with the filename as title
                 filename = os.path.basename(ppt_path)
                 elements = [Title(text=f"PowerPoint: {filename}")]
             
-            print(f"Found {len(elements)} elements in the PowerPoint")
+            print(f"Successfully extracted {len(elements)} elements from the PowerPoint")
             
-            # Group elements by slide if possible
-            if hasattr(elements[0], 'metadata') and elements[0].metadata and 'slide_number' in elements[0].metadata:
+            # Process the elements
+            if any(hasattr(element, 'metadata') and element.metadata and 'slide_number' in element.metadata for element in elements):
                 print("Organizing elements by slide...")
                 self._process_slides(elements, ppt_path)
             else:
-                # Fallback to regular processing
                 print("Processing elements without slide organization...")
                 self._process_elements(elements, ppt_path)
+            
+            # Verify documents were added
+            if len(self.vector_store.documents) > 0:
+                print(f"Success: {len(self.vector_store.documents)} documents added to vector store")
+                return True
+            else:
+                print("Warning: No documents were added to the vector store")
+                return False
                 
         except Exception as e:
-            print(f"Error ingesting PowerPoint: {str(e)}")
+            print(f"Critical error ingesting PowerPoint: {str(e)}")
             import traceback
             traceback.print_exc()
+            return False
 
     def _fallback_pptx_processing(self, ppt_path: str) -> List[Element]:
         """Fallback method to extract content from PowerPoint files if the partition_pptx fails"""
         try:
             print("Using fallback method for PowerPoint processing...")
-            prs = Presentation(ppt_path)
+            
+            # Check file extension
+            file_extension = os.path.splitext(ppt_path)[1].lower()
+            
+            # For older .ppt files, we'll use a text-based approach
+            if file_extension == '.ppt':
+                print("Using text extraction for older .ppt format")
+                return self._process_ppt_as_text(ppt_path)
+            
+            # For .pptx files, use python-pptx
+            from pptx import Presentation
             
             elements = []
             
-            # Process each slide
-            for slide_number, slide in enumerate(prs.slides, 1):
-                # Add slide title
-                if slide.shapes.title and slide.shapes.title.text:
-                    title_text = slide.shapes.title.text
-                    title = Title(text=title_text)
-                    title.metadata = {"slide_number": slide_number}
-                    elements.append(title)
+            try:
+                # Open the presentation
+                prs = Presentation(ppt_path)
                 
-                # Process all shapes/text boxes
-                slide_text = []
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text:
-                        # Skip if it's the title we already added
-                        if shape == slide.shapes.title:
-                            continue
-                        slide_text.append(shape.text)
-                
-                # Add text content
-                if slide_text:
-                    slide_content = "\n".join(slide_text)
-                    text_element = NarrativeText(text=slide_content)
-                    text_element.metadata = {"slide_number": slide_number}
-                    elements.append(text_element)
+                # Process each slide
+                for slide_number, slide in enumerate(prs.slides, 1):
+                    print(f"Processing slide {slide_number}...")
                     
-            return elements
+                    # Add slide title
+                    slide_title = None
+                    if hasattr(slide, 'shapes') and slide.shapes.title and slide.shapes.title.text:
+                        title_text = slide.shapes.title.text.strip()
+                        if title_text:
+                            slide_title = Title(text=title_text)
+                            slide_title.metadata = {"slide_number": slide_number}
+                            elements.append(slide_title)
+                            print(f"Added title: {title_text[:50]}...")
+                    
+                    # Process all shapes/text boxes
+                    slide_text = []
+                    
+                    # Process each shape in the slide
+                    for shape in slide.shapes:
+                        try:
+                            # For text boxes and shapes with text
+                            if hasattr(shape, "text") and shape.text and shape.text.strip():
+                                # Skip if it's the title we already added
+                                if shape == slide.shapes.title:
+                                    continue
+                                text = shape.text.strip()
+                                if text:
+                                    slide_text.append(text)
+                                    print(f"Found shape text: {text[:30]}...")
+                        
+                            # For tables
+                            if hasattr(shape, 'has_table') and shape.has_table:
+                                table_text = []
+                                table = shape.table
+                                for row in table.rows:
+                                    row_text = []
+                                    for cell in row.cells:
+                                        if cell.text and cell.text.strip():
+                                            row_text.append(cell.text.strip())
+                                    if row_text:
+                                        table_text.append(" | ".join(row_text))
+                                if table_text:
+                                    slide_text.append("\n".join(table_text))
+                                    print(f"Found table with {len(table_text)} rows")
+                        except Exception as shape_error:
+                            print(f"Error processing shape: {str(shape_error)}")
+                            continue
+                        
+                    # Add the combined text content as a narrative element
+                    if slide_text:
+                        slide_content = "\n".join(slide_text)
+                        print(f"Adding narrative text with {len(slide_content)} chars")
+                        text_element = NarrativeText(text=slide_content)
+                        text_element.metadata = {"slide_number": slide_number}
+                        elements.append(text_element)
+                    elif not slide_title:
+                        # If no title and no text, add a placeholder to ensure the slide exists
+                        placeholder = Title(text=f"Slide {slide_number}")
+                        placeholder.metadata = {"slide_number": slide_number}
+                        elements.append(placeholder)
+                        print(f"Added placeholder for empty slide {slide_number}")
+                
+                print(f"Extracted {len(elements)} elements from {len(prs.slides)} slides")
+                return elements
+                
+            except Exception as pptx_error:
+                print(f"Error using python-pptx: {str(pptx_error)}")
+                # If python-pptx fails, try text-based approach
+                return self._process_ppt_as_text(ppt_path)
+            
         except Exception as e:
             print(f"Error in fallback PowerPoint processing: {str(e)}")
-            # Return an empty list on failure
-            return []
+            import traceback
+            traceback.print_exc()
+            # Return a basic element instead of empty list to avoid failures
+            filename = os.path.basename(ppt_path)
+            return [Title(text=f"PowerPoint: {filename}")]
+
+    def _process_ppt_as_text(self, ppt_path: str) -> List[Element]:
+        """Process a PowerPoint file by extracting text content"""
+        try:
+            print(f"Extracting text content from PowerPoint file: {ppt_path}")
+            
+            # First try using catppt (from catdoc package)
+            try:
+                import subprocess
+                # Try catppt (part of catdoc package)
+                text = subprocess.check_output(['catppt', ppt_path], stderr=subprocess.DEVNULL).decode('utf-8', errors='ignore')
+                print(f"Extracted {len(text)} characters using catppt")
+                
+                # If catppt output is very short, try other methods
+                if len(text.strip()) < 100:
+                    raise Exception("Insufficient text extracted with catppt")
+                    
+            except Exception as catppt_error:
+                print(f"catppt failed or returned insufficient content: {str(catppt_error)}")
+                
+                # Try using textract if available
+                try:
+                    import textract
+                    text = textract.process(ppt_path).decode('utf-8')
+                    print(f"Extracted {len(text)} characters using textract")
+                    
+                    # If textract output is very short, try raw extraction
+                    if len(text.strip()) < 100:
+                        raise Exception("Insufficient text extracted with textract")
+                        
+                except Exception as textract_error:
+                    print(f"textract failed or returned insufficient content: {str(textract_error)}")
+                    
+                    # Last resort - try to read raw file content
+                    with open(ppt_path, 'rb') as f:
+                        content = f.read()
+                    # Extract any readable text (crude but might work as last resort)
+                    text = ''.join(char for char in content.decode('utf-8', errors='ignore') if char.isprintable())
+                    print(f"Extracted {len(text)} characters using raw extraction")
+            
+            # Create a fallback full document if text is very short
+            if len(text.strip()) < 50:
+                filename = os.path.basename(ppt_path)
+                elements = [
+                    Title(text=f"PowerPoint: {filename}"),
+                    NarrativeText(text=f"This is a PowerPoint presentation file. Limited text could be extracted: {text}")
+                ]
+                elements[0].metadata = {"slide_number": 1}
+                elements[1].metadata = {"slide_number": 1}
+                return elements
+            
+            # Split text into sections (try to identify slides)
+            elements = []
+            
+            # Look for slide markers or try to split by blank lines
+            slide_texts = []
+            
+            # Try to identify slide boundaries (looking for patterns like "Slide X" or multiple newlines)
+            if 'Slide ' in text or 'SLIDE ' in text:
+                # Use regex to find slide markers
+                import re
+                slide_matches = list(re.finditer(r'(Slide\s+\d+|SLIDE\s+\d+)', text))
+                
+                if slide_matches:
+                    last_pos = 0
+                    for match in slide_matches:
+                        if last_pos > 0:  # Not the first slide marker
+                            slide_content = text[last_pos:match.start()].strip()
+                            if slide_content:
+                                slide_texts.append(slide_content)
+                        last_pos = match.start()
+                        
+                    # Add the last slide
+                    if last_pos < len(text):
+                        slide_content = text[last_pos:].strip()
+                        if slide_content:
+                            slide_texts.append(slide_content)
+            
+            # If no slide markers found, split by multiple newlines
+            if not slide_texts:
+                slide_texts = re.split(r'\n\s*\n\s*\n', text)
+            
+            # If still no slides, just use the whole text as one slide
+            if not slide_texts or all(not s.strip() for s in slide_texts):
+                slide_texts = [text]
+            
+            # Create elements for each slide
+            for i, slide_text in enumerate(slide_texts, 1):
+                slide_text = slide_text.strip()
+                if not slide_text:
+                    continue
+                    
+                # Split into lines to extract potential title
+                lines = slide_text.split('\n')
+                title_text = lines[0] if lines else f"Slide {i}"
+                
+                # Create title element
+                title = Title(text=title_text)
+                title.metadata = {"slide_number": i}
+                elements.append(title)
+                
+                # Create content element (skip the first line if it was used as title)
+                content_text = '\n'.join(lines[1:]) if len(lines) > 1 else ""
+                if content_text.strip():
+                    content = NarrativeText(text=content_text)
+                    content.metadata = {"slide_number": i}
+                    elements.append(content)
+            
+            print(f"Created {len(elements)} elements from text extraction")
+            
+            # If we couldn't extract anything useful, create a minimal element
+            if not elements:
+                filename = os.path.basename(ppt_path)
+                elements = [
+                    Title(text=f"PowerPoint: {filename}"),
+                    NarrativeText(text="This is a PowerPoint presentation file. No readable content could be extracted.")
+                ]
+                elements[0].metadata = {"slide_number": 1}
+                elements[1].metadata = {"slide_number": 1}
+            
+            return elements
+            
+        except Exception as e:
+            print(f"Error in text-based PowerPoint processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Create a minimal element on failure
+            filename = os.path.basename(ppt_path)
+            return [
+                Title(text=f"PowerPoint: {filename}"),
+                NarrativeText(text="This is a PowerPoint presentation file. Content extraction failed.")
+            ]
 
     def _process_slides(self, elements: List[Element], source_path: str):
         """Process PowerPoint elements grouped by slide"""
         slides = {}
+        processed_count = 0
+        
+        print(f"Processing {len(elements)} elements from PowerPoint slides")
         
         # Group elements by slide number
         for element in elements:
@@ -613,29 +888,74 @@ class RAGSystem:
                 # Extract title and content
                 if isinstance(element, Title):
                     slides[slide_number]['title'] = str(element)
+                    print(f"Slide {slide_number} title: {str(element)[:30]}...")
                 elif isinstance(element, NarrativeText):
-                    slides[slide_number]['text'].append(str(element))
+                    content = str(element).strip()
+                    if content:
+                        slides[slide_number]['text'].append(content)
+                        print(f"Added {len(content)} chars of text to slide {slide_number}")
                 elif isinstance(element, Table):
-                    table_text = self._convert_table_to_text(element)
-                    slides[slide_number]['text'].append(table_text)
+                    try:
+                        table_text = self._convert_table_to_text(element)
+                        if table_text and table_text.strip():
+                            slides[slide_number]['text'].append(table_text)
+                            print(f"Added {len(table_text)} chars of table text to slide {slide_number}")
+                    except Exception as e:
+                        print(f"Error converting table on slide {slide_number}: {str(e)}")
+                        # Add the raw table content as fallback
+                        slides[slide_number]['text'].append(str(element))
         
         # Process each slide as a section
         sections_count = 0
-        for slide_number, content in slides.items():
+        for slide_number, content in sorted(slides.items()):
+            print(f"\nProcessing slide {slide_number}...")
+            
+            # Skip slides with absolutely no content
             if not content['title'] and not content['text']:
+                print(f"Skipping empty slide {slide_number}")
                 continue
             
-            # Use slide number in title if no title exists
+            # Create a title for slides missing one
             if not content['title']:
                 content['title'] = f"Slide {slide_number}"
+                print(f"Using default title: {content['title']}")
             
-            self._process_section(content, source_path)
-            sections_count += 1
+            # Enhance the content by adding slide context
+            content['text'].insert(0, f"From slide {slide_number} in presentation.")
+            
+            # Process the slide content
+            if self._process_section(content, source_path):
+                sections_count += 1
         
-        print(f"Processed {sections_count} slides from the PowerPoint presentation")
+        print(f"Successfully processed {sections_count} slides from the PowerPoint presentation")
         
         # Check if documents were added
-        print(f"Total documents in vector store: {len(self.vector_store.documents)}")
+        doc_count = len(self.vector_store.documents)
+        if doc_count > 0:
+            print(f"Total documents in vector store: {doc_count}")
+            return doc_count
+        else:
+            print("Warning: No documents were added to the vector store from slide processing")
+            # Add a fallback document with the filename
+            filename = os.path.basename(source_path)
+            title = f"PowerPoint: {filename}"
+            text = f"This is a PowerPoint presentation file named {filename} containing {len(slides)} slides."
+            
+            title_embedding = self.get_embedding(title)
+            text_embedding = self.get_embedding(text)
+            
+            doc_id = self.vector_store.add_document(
+                title=title,
+                text=text,
+                title_embedding=title_embedding,
+                text_embedding=text_embedding,
+                keywords=["powerpoint", "presentation", filename],
+                entities={},
+                metadata={'source': source_path}
+            )
+            
+            print(f"Added fallback document with ID: {doc_id}")
+            return 1
 
     def _process_elements(self, elements, source_path):
         """Common processing for all document types."""
@@ -675,17 +995,38 @@ class RAGSystem:
 
     def _process_section(self, section: Dict, source: str):
         try:
-            title = section['title']
-            text = ' '.join(section['text'])
+            title = section.get('title', '').strip()
+            # Join text parts and ensure it's a string
+            raw_text = ' '.join([str(t) for t in section.get('text', []) if t])
+            text = raw_text.strip()
             
-            # Skip empty sections
-            if not text.strip():
-                print("Skipping empty section")
-                return
-                
+            # Skip completely empty sections
+            if not title and not text:
+                print("Skipping completely empty section")
+                return False
+            
+            # Provide default title if needed
+            if not title:
+                # Use first line of text as title if possible
+                text_lines = text.split('\n')
+                if text_lines and len(text_lines[0]) > 3:
+                    title = text_lines[0][:50]  # Use first line as title
+                else:
+                    title = "Untitled Section"  # Default title
+                print(f"Using generated title: {title}")
+            
+            # Ensure minimum text length
+            if len(text) < 10:  # Very short content
+                print(f"Warning: Section has very short content ({len(text)} chars)")
+                # Combine title with text if text is too short
+                if title and len(title) > len(text):
+                    text = f"{title}. {text}"
+                    print(f"Using title as content, new length: {len(text)} chars")
+            
             print(f"Processing section: '{title[:50]}...' with {len(text)} chars of text")
             
-            title_embedding = self.get_embedding(title) if title else self.get_embedding("No title")
+            # Create embeddings
+            title_embedding = self.get_embedding(title)
             text_embedding = self.get_embedding(text)
             
             # Extract keywords and entities
@@ -706,11 +1047,13 @@ class RAGSystem:
             )
             
             print(f"Added document with ID: {doc_id}")
+            return True
             
         except Exception as e:
             print(f"Error processing section: {str(e)}")
             import traceback
             traceback.print_exc()
+            return False
 
     def _remove_think_tags(self, text: str) -> str:
         """Remove <think>...</think> tags and their content from the response."""

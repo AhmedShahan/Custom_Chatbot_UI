@@ -21,13 +21,29 @@ def upload_document(file):
         response.raise_for_status()  # Raise an exception for 4XX/5XX responses
         
         try:
-            return response.json()
+            result = response.json()
+            if "error" in result:
+                return {"error": result["error"]}
+            else:
+                return {
+                    "message": result["message"],
+                    "doc_count": result.get("doc_count", 0)
+                }
         except ValueError as e:
             # Handle case where response is not valid JSON
             return {"error": f"Invalid server response: {response.text[:100]}..."}
     except requests.RequestException as e:
         # Handle network-related errors
         return {"error": f"Request failed: {str(e)}"}
+
+def get_document_status():
+    """Get document status from backend"""
+    try:
+        response = requests.get("http://localhost:8000/document-status")
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        return {"error": f"Failed to get document status: {str(e)}"}
 
 def get_answer(question, model_type, model_name):
     """Get answer from backend"""
@@ -64,9 +80,25 @@ if st.session_state.current_page == "Training":
                 if "error" in result:
                     st.error(result["error"])
                 else:
-                    st.success(result["message"])
+                    st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections in the document.")
                     st.session_state.document_processed = True
                     st.session_state.current_page = "Playground"
+    
+    # Document status section
+    st.subheader("Current Document Status")
+    if st.button("Check Document Status"):
+        with st.spinner("Checking document status..."):
+            status = get_document_status()
+            if "error" in status:
+                st.error(status["error"])
+            elif status["status"] == "No document loaded":
+                st.info("No document is currently loaded.")
+            else:
+                st.info(f"Document loaded with {status['document_count']} sections.")
+                if "documents" in status and status["documents"]:
+                    st.write("Document sections:")
+                    for doc in status["documents"]:
+                        st.write(f"- {doc['title']} ({doc['text_length']} chars)")
 
 # Playground Page
 elif st.session_state.current_page == "Playground":
