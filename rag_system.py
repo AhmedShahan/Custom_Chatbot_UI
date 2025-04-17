@@ -394,6 +394,17 @@ class RAGSystem:
         self.extractive_generator = ExtractiveAnswerGenerator()
         self.use_llm = use_llm
         self.method = method  # Method can be "hybrid", "rule", "extractive"
+        self.model_name = model_name
+        
+        # Developer information
+        self.developer_info = {
+            "name": "Shahan Ahmed",
+            "title": "Data Scientist",
+            "company": "Startsmartz Technologies LLC",
+            "github": "https://github.com/AhmedShahan",
+            "researchgate": "https://www.researchgate.net/profile/Shahan-Ahmed-2?ev=hdr_xprf",
+            "email": "shahan.ahmed001@gmail.com"
+        }
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
@@ -401,7 +412,14 @@ class RAGSystem:
         self.embedding_model.eval()
 
         if use_llm:
-            self.generation_model = Ollama(model=model_name)
+            try:
+                self.generation_model = Ollama(model=model_name)
+                print(f"Initialized LLM using Ollama with model: {model_name}")
+            except Exception as e:
+                print(f"Warning: Failed to initialize Ollama LLM: {str(e)}")
+                self.generation_model = None
+                self.use_llm = False
+                print("Falling back to non-LLM methods only")
             
         # Initialize common extraction patterns
         self._initialize_extraction_patterns()
@@ -1338,6 +1356,53 @@ class RAGSystem:
         # No good answer found with non-LLM methods
         return "", False
 
+    def _generate_llm_response(self, prompt, max_retries=3):
+        """
+        Generate a response using the LLM with retry logic
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            The generated response or None if generation failed
+        """
+        if not self.use_llm or not self.generation_model:
+            print("LLM not available for generation")
+            return None
+            
+        for attempt in range(max_retries):
+            try:
+                print(f"Generating LLM response (attempt {attempt + 1}/{max_retries})")
+                response = self.generation_model(prompt)
+                
+                # Check if response is empty or too short
+                if not response or len(response.strip()) < 5:
+                    print(f"Empty or very short response received: '{response}'")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying LLM generation...")
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                    else:
+                        print("Maximum retries reached with empty responses")
+                        return None
+                
+                # Response looks good
+                return response
+                
+            except Exception as e:
+                print(f"Error in LLM generation attempt {attempt + 1}: {str(e)}")
+                if attempt < max_retries - 1:
+                    # Wait before retry with exponential backoff
+                    retry_delay = 2 ** attempt
+                    print(f"Waiting {retry_delay}s before retry...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"LLM generation failed after {max_retries} attempts")
+                    return None
+        
+        return None
+
     def query(self, question: str, k: int = 5, force_llm: bool = False) -> str:
         """
         Answer a question using the knowledge base
@@ -1393,6 +1458,31 @@ class RAGSystem:
             # Get final results (safely)
             results = keyword_results[:min(k, len(keyword_results))]
             
+            # Calculate cosine similarity for each result
+            similarities = []
+            if results:
+                try:
+                    # Get query embedding
+                    query_embedding = self.get_embedding(question)
+                    
+                    # Calculate similarity for each document
+                    for doc in results:
+                        if hasattr(doc, 'embedding') and doc.embedding is not None:
+                            # Calculate cosine similarity
+                            similarity = self._calculate_cosine_similarity(query_embedding, doc.embedding)
+                            similarities.append((doc, similarity))
+                        else:
+                            # If no embedding, use -1 to indicate missing data
+                            similarities.append((doc, -1))
+                    
+                    # Sort by similarity (highest first)
+                    similarities.sort(key=lambda x: x[1], reverse=True)
+                    
+                    # Update results based on sorted similarities
+                    results = [doc for doc, _ in similarities]
+                except Exception as e:
+                    print(f"Error calculating similarities: {str(e)}")
+            
             # If no results found at all, return a user-friendly message
             if not results:
                 return "I couldn't find any relevant information in the document to answer your question. Please try asking something else about the content of the document."
@@ -1408,7 +1498,15 @@ class RAGSystem:
             elif self.method == "extractive" and not force_llm:
                 # Pure extractive approach
                 try:
-                    return self.extractive_generator.generate_answer(question, results)
+                    answer = self.extractive_generator.generate_answer(question, results)
+                    # Add similarity information
+                    if similarities:
+                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
+                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
+                            for doc, sim in similarities[:3]
+                        ])
+                        return answer + similarity_info
+                    return answer
                 except Exception as e:
                     print(f"Error in extractive generation: {str(e)}")
                     return "I couldn't generate an answer using the extractive method. Please try a different approach."
@@ -1430,6 +1528,16 @@ class RAGSystem:
                         if len(entities) > 0:
                             entity_list = ", ".join(list(entities)[:5])
                             response_parts.append(f"{entity_type}: {entity_list}")
+                    
+                    # Add similarity information
+                    if similarities:
+                        response_parts.append("\nRelevance scores:")
+                        for doc, sim in similarities[:3]:
+                            try:
+                                if sim >= 0:
+                                    response_parts.append(f"- {doc.title[:30]}...: {sim:.2f}")
+                            except:
+                                response_parts.append(f"- {doc.title[:30]}...: N/A")
                 
                     return "\n".join(response_parts)
                 return "No relevant entities found in the documents."
@@ -1440,7 +1548,16 @@ class RAGSystem:
                     tfidf_results = self.vector_store.tfidf_search(question, k=k)
                     if tfidf_results and len(tfidf_results) > 0:
                         top_result = tfidf_results[0]
-                        return f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
+                        response = f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
+                        
+                        # Add similarity information
+                        if similarities:
+                            similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
+                                f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
+                                for doc, sim in similarities[:3]
+                            ])
+                            return response + similarity_info
+                        return response
                     return "No relevant documents found using TF-IDF search."
                 except Exception as e:
                     print(f"Error in TF-IDF search processing: {str(e)}")
@@ -1449,25 +1566,100 @@ class RAGSystem:
             elif self.use_llm:
                 # Hybrid approach with LLM
                 try:
-                    context = "\n\n".join([
-                        f"Section: {doc.title}\nContent: {doc.text[:1000]}..." 
-                        for doc in results
-                    ])
-            
-                    prompt = f"Answer the question using the provided context\n\nContext:\n{context}\n\nQuestion: {question}"
-                    response = self.generation_model(prompt)
+                    # Format the context with document similarity scores
+                    context_parts = []
+                    for i, (doc, sim) in enumerate(similarities[:min(k, len(similarities))]):
+                        # Only include documents with reasonable similarity if we have similarity scores
+                        if sim < 0 or sim >= 0.1:  # Include all docs if no similarity (-1) or similarity > threshold
+                            # Format the relevance score safely
+                            if sim >= 0:
+                                relevance_str = f"{sim:.2f}"
+                            else:
+                                relevance_str = "N/A"
+                            context_parts.append(f"Section {i+1} (Relevance: {relevance_str}):\nTitle: {doc.title}\nContent: {doc.text[:1000]}...")
+                    
+                    context = "\n\n".join(context_parts)
+                    
+                    # Create a simpler but very direct prompt
+                    prompt = f"""Answer ONLY based on the information in these sections. If you can't find the answer in the text below, say "I don't have information about that in the document."
+
+{context}
+
+Question: {question}
+
+Answer:"""
+
+                    # Generate response with our helper method that includes retry logic
+                    response = self._generate_llm_response(prompt)
+                    
+                    # If LLM failed to generate a response, fall back to extractive
+                    if response is None:
+                        print("LLM generation failed, falling back to extractive answer")
+                        extracted_answer = self.extractive_generator.generate_answer(question, results)
+                        
+                        # Add similarity information
+                        similarity_info = "\n\nRelevance scores:\n"
+                        for doc, sim in similarities[:3]:
+                            try:
+                                if sim >= 0:
+                                    similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
+                            except:
+                                similarity_info += f"- {doc.title[:30]}...: N/A\n"
+                        
+                        return extracted_answer + similarity_info
                     
                     # Remove <think> tags from the response
                     cleaned_response = self._remove_think_tags(response)
                     
-                    return cleaned_response
+                    # Add fallback measure: if the response doesn't make sense or is too short, use extractive
+                    if len(cleaned_response.strip()) < 10:
+                        print("LLM response was too short, falling back to extractive answer")
+                        extracted_answer = self.extractive_generator.generate_answer(question, results)
+                        similarity_info = "\n\nRelevance scores:\n"
+                        for doc, sim in similarities[:3]:
+                            try:
+                                if sim >= 0:
+                                    similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
+                            except:
+                                similarity_info += f"- {doc.title[:30]}...: N/A\n"
+                        return extracted_answer + similarity_info
+                    
+                    # Add similarity scores to the response
+                    similarity_info = "\n\nRelevance scores:\n"
+                    for doc, sim in similarities[:3]:
+                        try:
+                            if sim >= 0:
+                                similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
+                        except:
+                            similarity_info += f"- {doc.title[:30]}...: N/A\n"
+                    
+                    return cleaned_response + similarity_info
                 except Exception as e:
                     print(f"Error generating LLM response: {str(e)}")
-                    return "I encountered an issue generating a response. Please try again or use a different approach."
+                    # Fall back to extractive search as a backup method
+                    print("Falling back to extractive answer generation")
+                    extracted_answer = self.extractive_generator.generate_answer(question, results)
+                    
+                    # Add similarity information
+                    if similarities:
+                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
+                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
+                            for doc, sim in similarities[:3]
+                        ])
+                        return extracted_answer + similarity_info
+                    return extracted_answer
             else:
                 # Default to extractive if no method matched
                 try:
-                    return self.extractive_generator.generate_answer(question, results)
+                    answer = self.extractive_generator.generate_answer(question, results)
+                    # Add similarity information
+                    if similarities:
+                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
+                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
+                            for doc, sim in similarities[:3]
+                        ])
+                        return answer + similarity_info
+                    return answer
                 except Exception as e:
                     print(f"Error in default extractive generation: {str(e)}")
                     return "I couldn't generate an answer using the extractive method. Please try a different approach."
@@ -1476,6 +1668,28 @@ class RAGSystem:
             import traceback
             traceback.print_exc()
             return "I encountered an unexpected error while processing your question. Please try again with a different question."
+
+    def _calculate_cosine_similarity(self, embedding1, embedding2):
+        """Calculate cosine similarity between two embeddings"""
+        try:
+            # Convert to numpy arrays if they aren't already
+            if not isinstance(embedding1, np.ndarray):
+                embedding1 = np.array(embedding1)
+            if not isinstance(embedding2, np.ndarray):
+                embedding2 = np.array(embedding2)
+                
+            # Normalize the vectors
+            norm1 = np.linalg.norm(embedding1)
+            norm2 = np.linalg.norm(embedding2)
+            
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
+                
+            # Calculate cosine similarity
+            return float(np.dot(embedding1, embedding2) / (norm1 * norm2))
+        except Exception as e:
+            print(f"Error calculating similarity: {str(e)}")
+            return 0.0  # Return 0 similarity on error
 
     def save(self, path_prefix: str):
         self.vector_store.save(path_prefix)
