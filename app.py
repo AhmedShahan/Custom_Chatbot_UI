@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import validators  # Make sure to install this package
 
 # Configure page
 st.set_page_config(page_title="RAG Chatbot", layout="wide")
@@ -10,7 +11,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "current_page" not in st.session_state:
     st.session_state.current_page = "Training"
-if "pdf_processed" not in st.session_state:
+if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
 
 def upload_document(file):
@@ -18,6 +19,31 @@ def upload_document(file):
     try:
         files = {"file": file}
         response = requests.post("http://localhost:8000/upload-document", files=files)
+        response.raise_for_status()  # Raise an exception for 4XX/5XX responses
+        
+        try:
+            result = response.json()
+            if "error" in result:
+                return {"error": result["error"]}
+            else:
+                return {
+                    "message": result["message"],
+                    "doc_count": result.get("doc_count", 0)
+                }
+        except ValueError as e:
+            # Handle case where response is not valid JSON
+            return {"error": f"Invalid server response: {response.text[:100]}..."}
+    except requests.RequestException as e:
+        # Handle network-related errors
+        return {"error": f"Request failed: {str(e)}"}
+
+def process_website(url):
+    """Process website URL"""
+    try:
+        response = requests.post(
+            "http://localhost:8000/process-website",
+            params={"url": url}
+        )
         response.raise_for_status()  # Raise an exception for 4XX/5XX responses
         
         try:
@@ -72,20 +98,51 @@ with st.sidebar:
 if st.session_state.current_page == "Training":
     st.title("Document Training")
     
-    # Document upload section
-    st.subheader("Upload Document")
-    uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx", "csv", "xls", "xlsx"])
+    # Add tabs for different input methods
+    tab1, tab2 = st.tabs(["Upload Document", "Website URL"])
     
-    if uploaded_file:
-        if st.button("Process Document"):
-            with st.spinner(f"Processing {uploaded_file.name}..."):
-                result = upload_document(uploaded_file)
-                if "error" in result:
-                    st.error(result["error"])
-                else:
-                    st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections in the document.")
-                    st.session_state.document_processed = True
-                    st.session_state.current_page = "Playground"
+    with tab1:
+        # Document upload section
+        st.subheader("Upload Document")
+        uploaded_file = st.file_uploader("Choose a document", type=["pdf", "ppt", "pptx", "doc", "docx", "csv", "xls", "xlsx"])
+        
+        if uploaded_file:
+            if st.button("Process Document", key="process_doc"):
+                with st.spinner(f"Processing {uploaded_file.name}..."):
+                    result = upload_document(uploaded_file)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections in the document.")
+                        st.session_state.document_processed = True
+                        st.session_state.current_page = "Playground"
+    
+    with tab2:
+        # Website URL input section
+        st.subheader("Process Website Content")
+        website_url = st.text_input("Enter website URL", placeholder="https://example.com")
+        
+        # Validate URL when input changes
+        if website_url:
+            if not website_url.startswith(('http://', 'https://')):
+                website_url = 'https://' + website_url
+                st.info(f"Added https:// prefix: {website_url}")
+            
+            if not validators.url(website_url):
+                st.error("Please enter a valid URL")
+            else:
+                st.info("Valid URL format. Click 'Process Website' to continue.")
+        
+        if website_url and validators.url(website_url):
+            if st.button("Process Website", key="process_website"):
+                with st.spinner(f"Processing website: {website_url}... This may take a few minutes depending on the size of the website."):
+                    result = process_website(website_url)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections from the website.")
+                        st.session_state.document_processed = True
+                        st.session_state.current_page = "Playground"
     
     # Document status section
     st.subheader("Current Document Status")

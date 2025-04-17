@@ -2,6 +2,9 @@ from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from rag_system import RAGSystem
 import os
+import requests
+from urllib.parse import urlparse
+from website_scraper import WebsiteScraper
 
 app = FastAPI()
 
@@ -208,6 +211,70 @@ async def document_status():
         "document_count": doc_count,
         "documents": doc_summary
     }
+
+@app.post("/process-website")
+async def process_website(url: str = Query(...)):
+    global rag_system
+    
+    # Validate URL
+    try:
+        # Check if URL is valid
+        parsed_url = urlparse(url)
+        if not all([parsed_url.scheme, parsed_url.netloc]):
+            return {"error": "Invalid URL format"}
+        
+        # Check if website is accessible
+        response = requests.head(url, timeout=10)
+        if response.status_code >= 400:
+            return {"error": f"Website returned error status: {response.status_code}"}
+    except requests.RequestException as e:
+        return {"error": f"Failed to access website: {str(e)}"}
+    
+    try:
+        print(f"\n\n{'='*50}")
+        print(f"Processing website: {url}")
+        print(f"{'='*50}")
+        
+        # Create output directories if they don't exist
+        os.makedirs("uploads/website", exist_ok=True)
+        os.makedirs("uploads/pdf", exist_ok=True)
+        
+        # Create a unique filename based on the domain
+        domain = urlparse(url).netloc
+        safe_domain = ''.join(c if c.isalnum() else '_' for c in domain)
+        output_filename = f"{safe_domain}.pdf"
+        
+        # Initialize scraper and process website
+        scraper = WebsiteScraper(url, output_folder="uploads/website")
+        scraper.scrape_website()
+        pdf_path = scraper.convert_to_pdf(output_filename)
+        
+        if not pdf_path or not os.path.exists(pdf_path):
+            return {"error": "Failed to generate PDF from website content"}
+        
+        # Initialize RAG system (with default settings for initial load)
+        rag_system = RAGSystem(model_name="deepseek-r1:14b", use_llm=True, method="hybrid")
+        
+        # Process the generated PDF
+        rag_system.ingest_pdf(pdf_path)
+        
+        # Check if any documents were successfully added
+        doc_count = len(rag_system.vector_store.documents)
+        
+        if doc_count > 0:
+            print(f"Website processed successfully with {doc_count} sections")
+            return {
+                "message": f"Website processed successfully", 
+                "doc_count": doc_count
+            }
+        else:
+            print("Website processing failed or no content extracted")
+            return {"error": "Website was processed but no useful content was extracted"}
+    except Exception as e:
+        import traceback
+        print(f"Error processing website: {str(e)}")
+        traceback.print_exc()
+        return {"error": f"Error processing website: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
