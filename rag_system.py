@@ -1416,6 +1416,10 @@ class RAGSystem:
             The answer to the question
         """
         try:
+            # Check if the question is about developer information
+            if self._is_developer_question(question):
+                return self._get_developer_info()
+                
             # Extract keywords from the question
             question_keywords = self._extract_question_keywords(question)
             
@@ -1467,12 +1471,20 @@ class RAGSystem:
                     
                     # Calculate similarity for each document
                     for doc in results:
-                        if hasattr(doc, 'embedding') and doc.embedding is not None:
-                            # Calculate cosine similarity
-                            similarity = self._calculate_cosine_similarity(query_embedding, doc.embedding)
-                            similarities.append((doc, similarity))
-                        else:
-                            # If no embedding, use -1 to indicate missing data
+                        try:
+                            # Try text embedding first
+                            if hasattr(doc, 'text_embedding') and doc.text_embedding is not None:
+                                sim = self._calculate_cosine_similarity(query_embedding, doc.text_embedding)
+                                similarities.append((doc, sim))
+                            # Fall back to full embedding if available
+                            elif hasattr(doc, 'embedding') and doc.embedding is not None:
+                                sim = self._calculate_cosine_similarity(query_embedding, doc.embedding)
+                                similarities.append((doc, sim))
+                            else:
+                                # If no embedding, use -1 to indicate missing data
+                                similarities.append((doc, -1))
+                        except Exception as e:
+                            print(f"Error calculating similarity for document: {str(e)}")
                             similarities.append((doc, -1))
                     
                     # Sort by similarity (highest first)
@@ -1485,31 +1497,27 @@ class RAGSystem:
             
             # If no results found at all, return a user-friendly message
             if not results:
-                return "I couldn't find any relevant information in the document to answer your question. Please try asking something else about the content of the document."
+                return self._format_response("I couldn't find any relevant information in the document to answer your question. Please try asking something else about the content of the document.")
+            
+            # Prepare similarity info for adding to final response
+            similarity_info = self._format_similarity_info(similarities)
             
             # Choose method based on configuration
             if self.method == "rule" and not force_llm:
                 # Rule-based approach
                 non_llm_response, success = self._generate_non_llm_response(question, results)
                 if success:
-                    return non_llm_response
-                return "No relevant rule-based answer found."
+                    return self._format_response(non_llm_response + similarity_info)
+                return self._format_response("No relevant rule-based answer found." + similarity_info)
             
             elif self.method == "extractive" and not force_llm:
                 # Pure extractive approach
                 try:
                     answer = self.extractive_generator.generate_answer(question, results)
-                    # Add similarity information
-                    if similarities:
-                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
-                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
-                            for doc, sim in similarities[:3]
-                        ])
-                        return answer + similarity_info
-                    return answer
+                    return self._format_response(answer + similarity_info)
                 except Exception as e:
                     print(f"Error in extractive generation: {str(e)}")
-                    return "I couldn't generate an answer using the extractive method. Please try a different approach."
+                    return self._format_response("I couldn't generate an answer using the extractive method. Please try a different approach." + similarity_info)
             
             elif self.method == "extraction" and not force_llm:
                 # Entity extraction approach - extract entities and present them
@@ -1529,18 +1537,8 @@ class RAGSystem:
                             entity_list = ", ".join(list(entities)[:5])
                             response_parts.append(f"{entity_type}: {entity_list}")
                     
-                    # Add similarity information
-                    if similarities:
-                        response_parts.append("\nRelevance scores:")
-                        for doc, sim in similarities[:3]:
-                            try:
-                                if sim >= 0:
-                                    response_parts.append(f"- {doc.title[:30]}...: {sim:.2f}")
-                            except:
-                                response_parts.append(f"- {doc.title[:30]}...: N/A")
-                
-                    return "\n".join(response_parts)
-                return "No relevant entities found in the documents."
+                    return self._format_response("\n".join(response_parts) + similarity_info)
+                return self._format_response("No relevant entities found in the documents." + similarity_info)
             
             elif self.method == "tfidf" and not force_llm:
                 # TF-IDF based approach - use only TF-IDF search and return matching docs
@@ -1549,19 +1547,11 @@ class RAGSystem:
                     if tfidf_results and len(tfidf_results) > 0:
                         top_result = tfidf_results[0]
                         response = f"Top match: {top_result.title}\n\n{top_result.text[:500]}..."
-                        
-                        # Add similarity information
-                        if similarities:
-                            similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
-                                f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
-                                for doc, sim in similarities[:3]
-                            ])
-                            return response + similarity_info
-                        return response
-                    return "No relevant documents found using TF-IDF search."
+                        return self._format_response(response + similarity_info)
+                    return self._format_response("No relevant documents found using TF-IDF search." + similarity_info)
                 except Exception as e:
                     print(f"Error in TF-IDF search processing: {str(e)}")
-                    return "Error processing TF-IDF search results."
+                    return self._format_response("Error processing TF-IDF search results." + similarity_info)
             
             elif self.use_llm:
                 # Hybrid approach with LLM
@@ -1596,17 +1586,7 @@ Answer:"""
                     if response is None:
                         print("LLM generation failed, falling back to extractive answer")
                         extracted_answer = self.extractive_generator.generate_answer(question, results)
-                        
-                        # Add similarity information
-                        similarity_info = "\n\nRelevance scores:\n"
-                        for doc, sim in similarities[:3]:
-                            try:
-                                if sim >= 0:
-                                    similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
-                            except:
-                                similarity_info += f"- {doc.title[:30]}...: N/A\n"
-                        
-                        return extracted_answer + similarity_info
+                        return self._format_response(extracted_answer + similarity_info)
                     
                     # Remove <think> tags from the response
                     cleaned_response = self._remove_think_tags(response)
@@ -1615,59 +1595,79 @@ Answer:"""
                     if len(cleaned_response.strip()) < 10:
                         print("LLM response was too short, falling back to extractive answer")
                         extracted_answer = self.extractive_generator.generate_answer(question, results)
-                        similarity_info = "\n\nRelevance scores:\n"
-                        for doc, sim in similarities[:3]:
-                            try:
-                                if sim >= 0:
-                                    similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
-                            except:
-                                similarity_info += f"- {doc.title[:30]}...: N/A\n"
-                        return extracted_answer + similarity_info
+                        return self._format_response(extracted_answer + similarity_info)
                     
-                    # Add similarity scores to the response
-                    similarity_info = "\n\nRelevance scores:\n"
-                    for doc, sim in similarities[:3]:
-                        try:
-                            if sim >= 0:
-                                similarity_info += f"- {doc.title[:30]}...: {sim:.2f}\n"
-                        except:
-                            similarity_info += f"- {doc.title[:30]}...: N/A\n"
-                    
-                    return cleaned_response + similarity_info
+                    return self._format_response(cleaned_response + similarity_info)
                 except Exception as e:
                     print(f"Error generating LLM response: {str(e)}")
                     # Fall back to extractive search as a backup method
                     print("Falling back to extractive answer generation")
                     extracted_answer = self.extractive_generator.generate_answer(question, results)
-                    
-                    # Add similarity information
-                    if similarities:
-                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
-                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
-                            for doc, sim in similarities[:3]
-                        ])
-                        return extracted_answer + similarity_info
-                    return extracted_answer
+                    return self._format_response(extracted_answer + similarity_info)
             else:
                 # Default to extractive if no method matched
                 try:
                     answer = self.extractive_generator.generate_answer(question, results)
-                    # Add similarity information
-                    if similarities:
-                        similarity_info = f"\n\nRelevance scores:\n" + "\n".join([
-                            f"- {doc.title[:30]}...: {sim:.2f}" if sim >= 0 else f"- {doc.title[:30]}...: N/A" 
-                            for doc, sim in similarities[:3]
-                        ])
-                        return answer + similarity_info
-                    return answer
+                    return self._format_response(answer + similarity_info)
                 except Exception as e:
                     print(f"Error in default extractive generation: {str(e)}")
-                    return "I couldn't generate an answer using the extractive method. Please try a different approach."
+                    return self._format_response("I couldn't generate an answer using the extractive method. Please try a different approach." + similarity_info)
         except Exception as e:
             print(f"Unexpected error in query processing: {str(e)}")
             import traceback
             traceback.print_exc()
-            return "I encountered an unexpected error while processing your question. Please try again with a different question."
+            return self._format_response("I encountered an unexpected error while processing your question. Please try again with a different question.")
+
+    def _is_developer_question(self, question: str) -> bool:
+        """Check if the question is about the developer/creator"""
+        question_lower = question.lower()
+        developer_keywords = ["developer", "creator", "author", "made", "created", "built", "developed", 
+                              "who are you", "who created", "who made", "who built", "who developed", 
+                              "your maker", "who designed"]
+        
+        return any(keyword in question_lower for keyword in developer_keywords)
+        
+    def _get_developer_info(self) -> str:
+        """Return formatted developer information"""
+        info = self.developer_info
+        response = f"I was developed by {info['name']}, {info['title']} at {info['company']}.\n\n"
+        response += f"You can find more about the developer at:\n"
+        response += f"- GitHub: {info['github']}\n"
+        response += f"- ResearchGate: {info['researchgate']}\n"
+        response += f"- Email: {info['email']}"
+        
+        return self._format_response(response)
+        
+    def _format_similarity_info(self, similarities) -> str:
+        """Format similarity information for display"""
+        if not similarities:
+            return ""
+            
+        info = "\n\nRelevance scores:\n"
+        for i, (doc, sim) in enumerate(similarities[:3]):
+            if i >= 3:  # Limit to top 3
+                break
+                
+            # Format the document title
+            title = doc.title[:30] + "..." if len(doc.title) > 30 else doc.title
+            
+            # Format the similarity score
+            if sim >= 0:
+                score = f"{sim:.2f}"
+            else:
+                score = "N/A"
+                
+            info += f"- {title}: {score}\n"
+            
+        return info
+        
+    def _format_response(self, response: str) -> str:
+        """Format the final response with model information"""
+        # Add model information at the beginning
+        model_type = "LLM" if self.use_llm else "Non-LLM"
+        model_info = f"Response generated from {self.model_name} ({model_type})\n\n"
+        
+        return model_info + response
 
     def _calculate_cosine_similarity(self, embedding1, embedding2):
         """Calculate cosine similarity between two embeddings"""

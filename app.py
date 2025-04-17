@@ -207,8 +207,20 @@ elif st.session_state.current_page == "Playground":
                 if "error" in response:
                     st.error(response["error"])
                 else:
-                    st.write(response["answer"])
-                    st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
+                    # Create a placeholder for streaming response
+                    message_placeholder = st.empty()
+                    full_response = response["answer"]
+                    
+                    # Stream the response character by character
+                    displayed_response = ""
+                    for char in full_response:
+                        displayed_response += char
+                        message_placeholder.markdown(displayed_response + "▌")
+                        time.sleep(0.05)  # Small delay for streaming effect
+                        
+                    # Final display without cursor
+                    message_placeholder.markdown(displayed_response)
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
 
     # Clear chat button
     if st.button("Clear Chat"):
