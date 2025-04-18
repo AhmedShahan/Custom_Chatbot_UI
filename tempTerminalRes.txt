@@ -14,15 +14,10 @@ Processing section: 'Composition: All About Bangladesh...' with 2627 chars of te
 Extracted 10 keywords and 48 entities
 Building TF-IDF matrix with 1 documents
 TF-IDF matrix built successfully with shape (1, 196)
-Added document with ID: 78b56efd-533d-41c7-93fc-a1b2fce9dca6
+
+Storing Chunk 1 (ID: 45a8c3fa-b15b-4705-9102-69db83418116)
+Chunk Text: 1. Introduction Bangladesh is a beautiful South Asian country known for its rich culture, vibrant history, and lush green landscapes. It gained independence in 1971 after a long and bloody liberation war against Pakistan. The country is bordered by India on the west, north, and east, Myanmar on the southeast, and the Bay of Bengal to the south. 2. Geography and Climate Bangladesh is predominantly a riverine country with the Ganges, Brahmaputra, and Meghna rivers flowing through it. These rivers ...
+--------------------------------------------------
+Added document with ID: 45a8c3fa-b15b-4705-9102-69db83418116
 Processed 1 sections from the document
 Total documents in vector store: 1
-
-=== All Documents in Vector Store ===
-
-Document ID: 78b56efd-533d-41c7-93fc-a1b2fce9dca6
-Text: 1. Introduction Bangladesh is a beautiful South Asian country known for its rich culture, vibrant history, and lush green landscapes. It gained independence in 1971 after a long and bloody liberation war against Pakistan. The country is bordered by India on the west, north, and east, Myanmar on the southeast, and the Bay of Bengal to the south. 2. Geography and Climate Bangladesh is predominantly a riverine country with the Ganges, Brahmaputra, and Meghna rivers flowing through it. These rivers ...
-Keywords: bangladesh, india, the country, 1971, pakistan, myanmar, a monsoon season, east pakistan, the liberation war, durga puja
-Entities: {'CARDINAL': ['1', '2', '3.', '4.', '5.', '6', '7.', '8'], 'NORP': ['South Asian', 'British', 'Bengali', 'Bangladeshi', 'Sundarbans'], 'DATE': ['1971', 'a monsoon season', 'winters', '1947', '1971', 'December 16, 1971', 'recent years'], 'GPE': ['Pakistan', 'India', 'Myanmar', 'Bangladesh', 'India', 'East Pakistan', 'Bangladesh', 'Bangladesh', 'Pahela', 'Bangladesh', 'Bangladesh', 'sea beach', 'Sylhet', 'Bangladesh'], 'LOC': ['the Bay of Bengal'], 'PERSON': ['Climate Bangladesh', 'Traditions Bangladeshi'], 'ORG': ['Ganges', 'Brahmaputra', 'Meghna', 'Baishakh (Bengali New Year', 'Durga Puja', 'Literacy Education', 'the University of Dhaka', 'BUET', 'the Royal Bengal Tiger', 'Hill'], 'EVENT': ['the Liberation War']}
-Metadata: {'source': '/home/shahanahmed/Downloads/DocumentForChatbot/AboutBangladesh.pdf'}
---------------------------------------------------
