@@ -7,6 +7,9 @@ This is a RAG (Retrieval Augmented Generation) chatbot that can process and answ
 - PDF files (`.pdf`)
 - PowerPoint presentations (`.ppt`, `.pptx`)
 - Word documents (`.doc`, `.docx`)
+- spreadsheets (CSV, xlsx, )
+- web url (https://)
+- 
 
 ## Setup and Installation
 
@@ -36,7 +39,7 @@ This will start the Streamlit frontend, typically on port 8501. Open your browse
 
 ## Using the Application
 
-1. On the Training page, upload a document (PDF, PPT, PPTX, DOC, or DOCX).
+1. On the Training page, upload a document (PDF, PPT, PPTX, DOC,DOCX).
 2. Click "Process Document" to extract and index the content.
 3. After processing, you'll be automatically redirected to the Playground page.
 4. Use the chat interface to ask questions about the document.
