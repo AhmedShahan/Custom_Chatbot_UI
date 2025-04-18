@@ -5,6 +5,7 @@ import os
 import requests
 from urllib.parse import urlparse
 from website_scraper import WebsiteScraper
+import re
 
 app = FastAPI()
 
@@ -210,6 +211,68 @@ async def document_status():
         "status": "Document loaded",
         "document_count": doc_count,
         "documents": doc_summary
+    }
+
+@app.get("/document-content")
+async def get_document_content():
+    """Get the full content of the currently loaded document"""
+    global rag_system
+    
+    if rag_system is None:
+        return {"error": "No document loaded"}
+        
+    doc_count = len(rag_system.vector_store.documents)
+    
+    if doc_count == 0:
+        return {"error": "Document has no content"}
+    
+    # Collect all document chunks with their titles
+    chunks = []
+    for doc_id, doc in rag_system.vector_store.documents.items():
+        chunk = {
+            "id": doc_id,
+            "title": doc.title,
+            "text": doc.text,
+            "text_length": len(doc.text),
+            "has_table": bool(re.search(r'[|;].+[|;]', doc.text)) or "table" in doc.text.lower()
+        }
+        chunks.append(chunk)
+    
+    # Sort chunks by their position in the document (using title as a proxy)
+    chunks.sort(key=lambda x: x["title"])
+    
+    return {
+        "status": "Success",
+        "chunk_count": len(chunks),
+        "chunks": chunks
+    }
+
+@app.get("/extracted-tables")
+async def get_extracted_tables():
+    """Get tables extracted from the document"""
+    global rag_system
+    
+    if rag_system is None:
+        return {"error": "No document loaded"}
+        
+    tables = []
+    
+    # Look for table-like content in document chunks
+    for doc_id, doc in rag_system.vector_store.documents.items():
+        # Simple heuristic to identify table content
+        # Look for patterns like "Column1 | Column2" or "Key: Value; Key2: Value2"
+        if re.search(r'[|;].+[|;]', doc.text) or "table" in doc.text.lower():
+            tables.append({
+                "id": doc_id,
+                "title": doc.title,
+                "content": doc.text,
+                "source": doc.metadata.get("source", "Unknown")
+            })
+    
+    return {
+        "status": "Success",
+        "table_count": len(tables),
+        "tables": tables
     }
 
 @app.post("/process-website")

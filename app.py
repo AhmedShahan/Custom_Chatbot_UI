@@ -2,6 +2,9 @@ import streamlit as st
 import requests
 import time
 import validators  # Make sure to install this package
+import base64
+from datetime import datetime
+from fpdf import FPDF
 
 # Configure page
 st.set_page_config(page_title="RAG Chatbot", layout="wide")
@@ -13,6 +16,10 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "Training"
 if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
+if "document_chunks" not in st.session_state:
+    st.session_state.document_chunks = []
+if "extracted_tables" not in st.session_state:
+    st.session_state.extracted_tables = []
 
 def upload_document(file):
     """Upload document to backend"""
@@ -71,6 +78,24 @@ def get_document_status():
     except Exception as e:
         return {"error": f"Failed to get document status: {str(e)}"}
 
+def get_document_content():
+    """Get full document content from backend"""
+    try:
+        response = requests.get("http://localhost:8000/document-content")
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        return {"error": f"Failed to get document content: {str(e)}"}
+
+def get_extracted_tables():
+    """Get extracted tables from backend"""
+    try:
+        response = requests.get("http://localhost:8000/extracted-tables")
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        return {"error": f"Failed to get extracted tables: {str(e)}"}
+
 def get_answer(question, model_type, model_name):
     """Get answer from backend"""
     response = requests.post(
@@ -83,6 +108,38 @@ def get_answer(question, model_type, model_name):
     )
     return response.json()
 
+def create_chat_pdf(messages):
+    """Create a PDF from chat history"""
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Set font
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(190, 10, "Chat History", ln=True, align="C")
+    pdf.ln(10)
+    
+    # Add timestamp
+    pdf.set_font("Arial", "I", 10)
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    pdf.cell(190, 5, f"Generated on: {current_time}", ln=True)
+    pdf.ln(5)
+    
+    # Add chat messages
+    pdf.set_font("Arial", "", 12)
+    for i, message in enumerate(messages):
+        role = message["role"].upper()
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(190, 10, f"{role}:", ln=True)
+        pdf.set_font("Arial", "", 12)
+        
+        # Handle multi-line content
+        content = message["content"]
+        pdf.multi_cell(190, 8, content)
+        pdf.ln(5)
+    
+    # Return PDF as base64 string
+    return base64.b64encode(pdf.output(dest="S").encode("latin1")).decode("utf-8")
+
 # Sidebar navigation
 with st.sidebar:
     st.title("Navigation")
@@ -92,6 +149,15 @@ with st.sidebar:
         if not st.session_state.document_processed:
             st.error("Please process a document first!")
         else:
+            # Fetch document content and tables when navigating to Playground
+            content_result = get_document_content()
+            if "error" not in content_result:
+                st.session_state.document_chunks = content_result.get("chunks", [])
+            
+            tables_result = get_extracted_tables()
+            if "error" not in tables_result:
+                st.session_state.extracted_tables = tables_result.get("tables", [])
+                
             st.session_state.current_page = "Playground"
 
 # Training Page
@@ -115,6 +181,16 @@ if st.session_state.current_page == "Training":
                     else:
                         st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections in the document.")
                         st.session_state.document_processed = True
+                        
+                        # Fetch document content and tables
+                        content_result = get_document_content()
+                        if "error" not in content_result:
+                            st.session_state.document_chunks = content_result.get("chunks", [])
+                        
+                        tables_result = get_extracted_tables()
+                        if "error" not in tables_result:
+                            st.session_state.extracted_tables = tables_result.get("tables", [])
+                            
                         st.session_state.current_page = "Playground"
     
     with tab2:
@@ -142,6 +218,16 @@ if st.session_state.current_page == "Training":
                     else:
                         st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections from the website.")
                         st.session_state.document_processed = True
+                        
+                        # Fetch document content and tables
+                        content_result = get_document_content()
+                        if "error" not in content_result:
+                            st.session_state.document_chunks = content_result.get("chunks", [])
+                        
+                        tables_result = get_extracted_tables()
+                        if "error" not in tables_result:
+                            st.session_state.extracted_tables = tables_result.get("tables", [])
+                            
                         st.session_state.current_page = "Playground"
     
     # Document status section
@@ -164,65 +250,114 @@ if st.session_state.current_page == "Training":
 elif st.session_state.current_page == "Playground":
     st.title("RAG Chatbot Playground")
 
-    # Model Selection
-    col1, col2 = st.columns(2)
+    # Create tabs for different views
+    playground_tab, content_tab, tables_tab = st.tabs(["Chat", "Document Content", "Extracted Tables"])
     
-    with col1:
-        model_type = st.radio("Select Model Type", ["LLM", "Non-LLM"])
-    
-    with col2:
-        if model_type == "LLM":
-            model_name = st.selectbox(
-                "Select LLM Model",
-                ["llama3.2", "gamma", "opencoder:1.5b","chatglm-6b-v2"]
-            )
-        else:
-            model_name = st.selectbox(
-                "Select Method",
-                ["rule", "extractive", "extraction", "tfidf"]
-            )
+    with playground_tab:
+        # Model Selection
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            model_type = st.radio("Select Model Type", ["LLM", "Non-LLM"])
+        
+        with col2:
+            if model_type == "LLM":
+                model_name = st.selectbox(
+                    "Select LLM Model",
+                    ["llama3.2", "gamma", "deepseek-r1:14b", "opencoder:1.5b", "chatglm-6b-v2"]
+                )
+            else:
+                model_name = st.selectbox(
+                    "Select Method",
+                    ["rule", "extractive", "extraction", "tfidf"]
+                )
 
-    # Display current configuration
-    st.info(f"Current Configuration: {model_type} - {model_name}")
+        # Display current configuration
+        st.info(f"Current Configuration: {model_type} - {model_name}")
 
-    # Chat Interface
-    st.subheader("Chat Interface")
+        # Chat Interface
+        st.subheader("Chat Interface")
 
-    # Display chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
 
-    # Chat input
-    if prompt := st.chat_input("Ask a question about the document"):
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.write(prompt)
+        # Chat input
+        if prompt := st.chat_input("Ask a question about the document"):
+            # Add user message
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.write(prompt)
 
-        # Get and display assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = get_answer(prompt, model_type, model_name)
-                if "error" in response:
-                    st.error(response["error"])
-                else:
-                    # Create a placeholder for streaming response
-                    message_placeholder = st.empty()
-                    full_response = response["answer"]
-                    
-                    # Stream the response character by character
-                    displayed_response = ""
-                    for char in full_response:
-                        displayed_response += char
-                        message_placeholder.markdown(displayed_response + "▌")
-                        time.sleep(0.05)  # Small delay for streaming effect
+            # Get and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response = get_answer(prompt, model_type, model_name)
+                    if "error" in response:
+                        st.error(response["error"])
+                    else:
+                        # Create a placeholder for streaming response
+                        message_placeholder = st.empty()
+                        full_response = response["answer"]
                         
-                    # Final display without cursor
-                    message_placeholder.markdown(displayed_response)
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                        # Stream the response character by character
+                        displayed_response = ""
+                        for char in full_response:
+                            displayed_response += char
+                            message_placeholder.markdown(displayed_response + "▌")
+                            time.sleep(0.005)  # Small delay for streaming effect
+                            
+                        # Final display without cursor
+                        message_placeholder.markdown(displayed_response)
+                        st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-    # Clear chat button
-    if st.button("Clear Chat"):
-        st.session_state.messages = []
-        st.rerun() 
+        # Chat export options
+        if st.session_state.messages:
+            if st.button("Export Chat to PDF"):
+                pdf_base64 = create_chat_pdf(st.session_state.messages)
+                
+                # Create download link
+                href = f'<a href="data:application/pdf;base64,{pdf_base64}" download="chat_history.pdf">Download Chat History PDF</a>'
+                st.markdown(href, unsafe_allow_html=True)
+
+        # Clear chat button
+        if st.button("Clear Chat"):
+            st.session_state.messages = []
+            st.rerun()
+    
+    with content_tab:
+        st.subheader("Document Content")
+        
+        # Show document chunks
+        if st.session_state.document_chunks:
+            st.write(f"Total chunks: {len(st.session_state.document_chunks)}")
+            
+            # Display first few chunks by default
+            display_limit = st.slider("Number of chunks to display", 1, len(st.session_state.document_chunks), min(5, len(st.session_state.document_chunks)))
+            
+            for i, chunk in enumerate(st.session_state.document_chunks[:display_limit]):
+                with st.expander(f"Chunk {i+1}: {chunk['title']}"):
+                    st.write(f"**ID:** {chunk['id']}")
+                    st.write(f"**Length:** {chunk['text_length']} characters")
+                    st.text_area("Content", chunk['text'], height=200, key=f"chunk_{i}")
+                    if chunk.get('has_table', False):
+                        st.info("This chunk contains table-like content")
+                    st.write("---")
+        else:
+            st.info("No document content available. Please process a document first.")
+    
+    with tables_tab:
+        st.subheader("Extracted Tables")
+        
+        # Show extracted tables
+        if st.session_state.extracted_tables:
+            st.write(f"Total tables found: {len(st.session_state.extracted_tables)}")
+            
+            for i, table in enumerate(st.session_state.extracted_tables):
+                with st.expander(f"Table {i+1}: {table['title']}"):
+                    st.write(f"**Source:** {table['source']}")
+                    st.text_area("Table Content", table['content'], height=200, key=f"table_{i}")
+                    st.write("---")
+        else:
+            st.info("No tables found in the document. Tables are automatically detected from structured content.") 
