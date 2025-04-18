@@ -64,6 +64,16 @@ class DocumentEntry:
     entities: Dict[str, List[str]] = field(default_factory=dict)
     metadata: Dict = field(default_factory=dict)
 
+class DocumentEntry:
+    id: str
+    title: str
+    text: str
+    title_embedding: np.ndarray
+    text_embedding: np.ndarray
+    keywords: List[str] = field(default_factory=list)
+    entities: Dict[str, List[str]] = field(default_factory=dict)
+    metadata: Dict = field(default_factory=dict)
+
 class ParallelVectorStore:
     def __init__(self, embedding_dim: int = 768):
         self.title_index = faiss.IndexFlatL2(embedding_dim)
@@ -74,9 +84,9 @@ class ParallelVectorStore:
         self.document_ids = []
 
     def add_document(self, title: str, text: str, 
-                     title_embedding: np.ndarray, text_embedding: np.ndarray,
-                     keywords: List[str] = None, entities: Dict[str, List[str]] = None,
-                     metadata: Dict = None) -> str:
+                    title_embedding: np.ndarray, text_embedding: np.ndarray,
+                    keywords: List[str] = None, entities: Dict[str, List[str]] = None,
+                    metadata: Dict = None) -> str:
         doc_id = str(uuid.uuid4())
         title_embedding = np.array(title_embedding, dtype=np.float32).reshape(1, -1)
         text_embedding = np.array(text_embedding, dtype=np.float32).reshape(1, -1)
@@ -96,10 +106,7 @@ class ParallelVectorStore:
         )
         
         self.document_ids.append(doc_id)
-        
-        # Rebuild TF-IDF matrix
         self._rebuild_tfidf()
-        
         return doc_id
 
     def _rebuild_tfidf(self):
@@ -187,19 +194,33 @@ class ParallelVectorStore:
             json.dump(documents_to_save, f)
 
     def print_all_documents(self):
-        """Print all document IDs and their content (text, keywords, entities, metadata)."""
+        """Print all chunked information in the vector store."""
         if not self.documents:
-            print("No documents found in the vector store.")
+            print("No chunked information found in the vector store.")
             return
         
-        print("\n=== All Documents in Vector Store ===")
+        print("\n=== Chunked Information in Vector Store ===")
         for doc_id, doc in self.documents.items():
-            print(f"\nDocument ID: {doc_id}")
-            print(f"Text: {doc.text[:500] + '...' if len(doc.text) > 500 else doc.text}")
+            print(f"\nChunk ID: {doc_id}")
+            print(f"Text (Full Content, {len(doc.text)} chars):\n{doc.text}")
             print(f"Keywords: {', '.join(doc.keywords)}")
             print(f"Entities: {doc.entities}")
             print(f"Metadata: {doc.metadata}")
-            print("-" * 50)
+            print("=" * 80)
+
+    def print_chunk_by_id(self, doc_id: str):
+        """Print chunked information for a specific document ID."""
+        if doc_id not in self.documents:
+            print(f"No chunk found with ID: {doc_id}")
+            return
+        doc = self.documents[doc_id]
+        print(f"\n=== Chunked Information for ID: {doc_id} ===")
+        print(f"Chunk ID: {doc_id}")
+        print(f"Text (Full Content, {len(doc.text)} chars):\n{doc.text}")
+        print(f"Keywords: {', '.join(doc.keywords)}")
+        print(f"Entities: {doc.entities}")
+        print(f"Metadata: {doc.metadata}")
+        print("=" * 80)
 
     @classmethod
     def load(cls, path_prefix: str):
@@ -824,6 +845,26 @@ class RAGSystem:
             keywords = self.extract_keywords(text)
             entities = self.extractor.extract_entities(text)
             print(f"Extracted {len(keywords)} keywords and {sum(len(v) for v in entities.values())} entities")
+            
+            # Print chunked information even if storage fails
+            print(f"\n=== Chunked Information (Pre-Storage) ===")
+            print(f"Title: {title}")
+            print(f"Text (Full Content, {len(text)} chars):\n{text}")
+            print(f"Keywords: {', '.join(keywords)}")
+            print(f"Entities: {entities}")
+            print(f"Metadata: {{'source': '{source}'}}")
+            print("=" * 80)
+
+            # Debug: Print arguments
+            print("Debug: Arguments for add_document:")
+            print(f"  title: {title[:50]}... ({len(title)} chars)")
+            print(f"  text: {text[:50]}... ({len(text)} chars)")
+            print(f"  title_embedding shape: {title_embedding.shape}")
+            print(f"  text_embedding shape: {text_embedding.shape}")
+            print(f"  keywords: {keywords}")
+            print(f"  entities: {entities}")
+            print(f"  metadata: {{'source': '{source}'}}")
+
             doc_id = self.vector_store.add_document(
                 title=title,
                 text=text,
@@ -839,8 +880,15 @@ class RAGSystem:
             print("-" * 50)
             print(f"Added document with ID: {doc_id}")
             return True
+        except TypeError as e:
+            print(f"TypeError in processing section: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
         except Exception as e:
-            print(f"Error processing section: {str(e)}")
+            print(f"Unexpected error in processing section: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _remove_think_tags(self, text: str) -> str:
@@ -1333,7 +1381,7 @@ if __name__ == "__main__":
     
     # Test with a sample question
     question = "Tell me about the document"
-    
+    rag.vector_store.print_all_documents()
     # # Hybrid approach
     # print("Hybrid approach (non-LLM with LLM fallback):")
     # rag.method = "hybrid"
