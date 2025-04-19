@@ -336,28 +336,95 @@ elif st.session_state.current_page == "Playground":
             # Display first few chunks by default
             display_limit = st.slider("Number of chunks to display", 1, len(st.session_state.document_chunks), min(5, len(st.session_state.document_chunks)))
             
-            for i, chunk in enumerate(st.session_state.document_chunks[:display_limit]):
+            # Add search and filtering options
+            chunk_search = st.text_input("Search within chunks", "")
+            
+            # Filter chunks if search term provided
+            filtered_chunks = st.session_state.document_chunks
+            if chunk_search:
+                filtered_chunks = [
+                    chunk for chunk in st.session_state.document_chunks 
+                    if chunk_search.lower() in chunk['title'].lower() or chunk_search.lower() in chunk['text'].lower()
+                ]
+                st.write(f"Found {len(filtered_chunks)} chunks matching '{chunk_search}'")
+            
+            # Show visualization of chunk sizes
+            if len(filtered_chunks) > 0:
+                # Create chart data
+                chart_data = {
+                    'Chunk': [f"Chunk {i+1}: {chunk['title'][:20]}..." for i, chunk in enumerate(filtered_chunks[:display_limit])],
+                    'Size (chars)': [chunk['text_length'] for chunk in filtered_chunks[:display_limit]]
+                }
+                st.bar_chart(chart_data, x='Chunk', y='Size (chars)')
+            
+            for i, chunk in enumerate(filtered_chunks[:display_limit]):
                 with st.expander(f"Chunk {i+1}: {chunk['title']}"):
                     st.write(f"**ID:** {chunk['id']}")
                     st.write(f"**Length:** {chunk['text_length']} characters")
-                    st.text_area("Content", chunk['text'], height=200, key=f"chunk_{i}")
+                    
+                    # Display text with proper formatting
+                    st.markdown("**Content:**")
+                    
+                    # Show text with syntax highlighting if it contains code
+                    if "```" in chunk['text'] or "def " in chunk['text'] or "class " in chunk['text']:
+                        st.code(chunk['text'], language="python")
+                    else:
+                        # Use a monospace font for better readability
+                        st.text_area("", chunk['text'], height=300, key=f"chunk_{i}")
+                    
+                    # Show if this chunk contains table-like content
                     if chunk.get('has_table', False):
                         st.info("This chunk contains table-like content")
                     st.write("---")
+                    
+            # Pagination controls if needed
+            if len(filtered_chunks) > display_limit:
+                st.write(f"Showing {display_limit} of {len(filtered_chunks)} chunks. Adjust the slider to see more.")
         else:
             st.info("No document content available. Please process a document first.")
     
     with tables_tab:
         st.subheader("Extracted Tables")
         
-        # Show extracted tables
+        # Show extracted tables with enhanced display
         if st.session_state.extracted_tables:
             st.write(f"Total tables found: {len(st.session_state.extracted_tables)}")
             
-            for i, table in enumerate(st.session_state.extracted_tables):
+            # Add search option for tables
+            table_search = st.text_input("Search within tables", "")
+            
+            # Filter tables if search term provided
+            filtered_tables = st.session_state.extracted_tables
+            if table_search:
+                filtered_tables = [
+                    table for table in st.session_state.extracted_tables 
+                    if table_search.lower() in table['title'].lower() or table_search.lower() in table['content'].lower()
+                ]
+                st.write(f"Found {len(filtered_tables)} tables matching '{table_search}'")
+            
+            # Display tables
+            for i, table in enumerate(filtered_tables):
                 with st.expander(f"Table {i+1}: {table['title']}"):
                     st.write(f"**Source:** {table['source']}")
-                    st.text_area("Table Content", table['content'], height=200, key=f"table_{i}")
+                    
+                    # Attempt to extract and display structured table
+                    try:
+                        # See if we can extract a proper table structure
+                        table_content = table['content']
+                        
+                        # Check if it has pipe separators (markdown table)
+                        if "|" in table_content:
+                            st.markdown("**Table Format:**")
+                            st.markdown(table_content)
+                            
+                        # Display as code block for better structure
+                        st.markdown("**Raw Table Content:**")
+                        st.code(table_content, language=None)
+                        
+                    except Exception as e:
+                        # Fall back to simple text display
+                        st.text_area("Table Content", table['content'], height=200, key=f"table_{i}")
+                    
                     st.write("---")
         else:
             st.info("No tables found in the document. Tables are automatically detected from structured content.") 

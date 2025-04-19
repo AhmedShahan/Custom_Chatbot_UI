@@ -1089,33 +1089,131 @@ class RAGSystem:
         current_section = {'title': '', 'text': []}
         sections_count = 0
         
+        # First pass - group elements by content type (title, text, table)
+        # This helps preserve document structure
+        structured_sections = []
+        current_title = None
+        current_elements = []
+        
         for i, element in enumerate(elements):
             try:
                 if isinstance(element, Title):
-                    if current_section['title'] or current_section['text']:
-                        self._process_section(current_section, source_path)
-                        sections_count += 1
-                    current_section = {'title': str(element), 'text': []}
-                    print(f"Found title: {str(element)[:50]}...")
-                elif isinstance(element, Table):
-                    # Convert table to text and add to current section
-                    table_text = self._convert_table_to_text(element)
-                    current_section['text'].append(table_text)
-                    print(f"Added table content ({len(table_text)} chars)")
-                elif isinstance(element, NarrativeText):
-                    current_section['text'].append(str(element))
-                    print(f"Added text content ({len(str(element))} chars)")
+                    # If we have a previous title and elements, save them
+                    if current_title or current_elements:
+                        structured_sections.append({
+                            'title': current_title,
+                            'elements': current_elements
+                        })
+                    # Start a new section
+                    current_title = str(element)
+                    current_elements = []
+                else:
+                    # Add to current section
+                    current_elements.append(element)
             except Exception as e:
-                print(f"Error processing element {i}: {str(e)}")
-
-        # Process the last section if it exists
-        if current_section['title'] or current_section['text']:
-            self._process_section(current_section, source_path)
-            sections_count += 1
-            
+                print(f"Error during element grouping for element {i}: {str(e)}")
+        
+        # Add the last section if it exists
+        if current_title or current_elements:
+            structured_sections.append({
+                'title': current_title,
+                'elements': current_elements
+            })
+        
+        print(f"Grouped document into {len(structured_sections)} logical sections")
+        
+        # Process each structured section
+        for section_idx, section in enumerate(structured_sections):
+            try:
+                title = section['title']
+                elements = section['elements']
+                
+                # Process different element types within this section
+                processed_text = []
+                tables = []
+                
+                for elem in elements:
+                    if isinstance(elem, Table):
+                        table_text = self._convert_table_to_text(elem)
+                        # Store tables separately to ensure they don't get broken up
+                        tables.append(table_text)
+                    elif isinstance(elem, NarrativeText):
+                        processed_text.append(str(elem))
+                    else:
+                        # Handle any other element type by converting to string
+                        processed_text.append(str(elem))
+                
+                # Combine regular text
+                text_content = "\n\n".join(processed_text)
+                
+                # Process text content
+                if title and text_content:
+                    # Text plus title
+                    section_data = {
+                        'title': title,
+                        'text': [text_content]
+                    }
+                    self._process_section(section_data, source_path)
+                    sections_count += 1
+                elif text_content:
+                    # Just text, no title
+                    section_data = {
+                        'title': f"Section {section_idx + 1}",
+                        'text': [text_content]
+                    }
+                    self._process_section(section_data, source_path)
+                    sections_count += 1
+                
+                # Process each table as a separate section to preserve its structure
+                for table_idx, table_text in enumerate(tables):
+                    table_title = title if title else f"Section {section_idx + 1}"
+                    table_title = f"{table_title} - Table {table_idx + 1}"
+                    
+                    table_data = {
+                        'title': table_title,
+                        'text': [table_text]
+                    }
+                    self._process_section(table_data, source_path)
+                    sections_count += 1
+                
+            except Exception as e:
+                print(f"Error processing structured section {section_idx}: {str(e)}")
+        
         print(f"Processed {sections_count} sections from the document")
         
         # Check if documents were added
+        doc_count = len(self.vector_store.documents)
+        
+        # If no sections were successfully processed, try processing the entire document as a single section
+        if sections_count == 0:
+            print("No sections processed. Attempting to process entire document as single section.")
+            
+            # Extract all text content
+            all_text = []
+            for element in elements:
+                try:
+                    if isinstance(element, Title):
+                        all_text.append(f"# {str(element)}")
+                    elif isinstance(element, Table):
+                        table_text = self._convert_table_to_text(element)
+                        all_text.append(table_text)
+                    else:
+                        all_text.append(str(element))
+                except:
+                    pass
+            
+            # Process as a single section
+            if all_text:
+                combined_text = "\n\n".join(all_text)
+                document_name = os.path.basename(source_path)
+                
+                section_data = {
+                    'title': f"Document: {document_name}",
+                    'text': [combined_text]
+                }
+                self._process_section(section_data, source_path)
+                sections_count += 1
+        
         print(f"Total documents in vector store: {len(self.vector_store.documents)}")
 
     def _process_section(self, section: Dict, source: str):
@@ -1130,49 +1228,130 @@ class RAGSystem:
                 print("Skipping completely empty section")
                 return False
             
+            # Minimum text length requirement - must have at least 20 characters to be meaningful
+            if len(text) < 20:
+                print(f"Warning: Section has very short content ({len(text)} chars)")
+                # Check if the title has more content than the text
+                if title and len(title) > len(text):
+                    # Use title as the text content if it's more substantial
+                    text = f"{title}. {text}"
+                    print(f"Using title as content, new length: {len(text)} chars")
+                # If still too short, skip this section
+                if len(text) < 20:
+                    print("Section content too short, skipping")
+                    return False
+            
             # Provide default title if needed
             if not title:
                 # Use first line of text as title if possible
                 text_lines = text.split('\n')
-                if text_lines and len(text_lines[0]) > 3:
-                    title = text_lines[0][:50]  # Use first line as title
+                if text_lines and len(text_lines[0]) > 5:
+                    title = text_lines[0][:80]  # Use first line as title, up to 80 chars
+                    # Remove the title line from the text to avoid duplication
+                    text = '\n'.join(text_lines[1:])
                 else:
-                    title = "Untitled Section"  # Default title
+                    # If no good title from first line, create one from initial text
+                    words = text.split()
+                    if len(words) >= 3:
+                        title = ' '.join(words[:5]) + "..."  # Use first 5 words as title
+                    else:
+                        title = "Untitled Section"  # Default title
                 print(f"Using generated title: {title}")
             
-            # Ensure minimum text length
-            if len(text) < 10:  # Very short content
-                print(f"Warning: Section has very short content ({len(text)} chars)")
-                # Combine title with text if text is too short
-                if title and len(title) > len(text):
-                    text = f"{title}. {text}"
-                    print(f"Using title as content, new length: {len(text)} chars")
+            # If the text is too large, split it into multiple sections
+            MAX_SECTION_SIZE = 10000  # Maximum chars per document for optimal embedding
             
-            print(f"Processing section: '{title[:50]}...' with {len(text)} chars of text")
-            
-            # Create embeddings
-            title_embedding = self.get_embedding(title)
-            text_embedding = self.get_embedding(text)
-            
-            # Extract keywords and entities
-            keywords = self.extract_keywords(text)
-            entities = self.extractor.extract_entities(text)
-            
-            print(f"Extracted {len(keywords)} keywords and {sum(len(v) for v in entities.values())} entities")
+            if len(text) > MAX_SECTION_SIZE:
+                print(f"Section is too large ({len(text)} chars), splitting into chunks")
+                
+                # Split the text into paragraphs
+                paragraphs = [p for p in re.split(r'\n\s*\n', text) if p.strip()]
+                
+                if not paragraphs:
+                    # If no clear paragraphs, split by sentences
+                    sentences = sent_tokenize(text)
+                    current_chunk = ""
+                    chunks = []
+                    
+                    for sentence in sentences:
+                        if len(current_chunk) + len(sentence) < MAX_SECTION_SIZE:
+                            current_chunk += sentence + " "
+                        else:
+                            if current_chunk:
+                                chunks.append(current_chunk.strip())
+                            current_chunk = sentence + " "
+                    
+                    if current_chunk:  # Add the last chunk
+                        chunks.append(current_chunk.strip())
+                else:
+                    # Create chunks by combining paragraphs
+                    current_chunk = ""
+                    chunks = []
+                    
+                    for paragraph in paragraphs:
+                        if len(current_chunk) + len(paragraph) < MAX_SECTION_SIZE:
+                            current_chunk += paragraph + "\n\n"
+                        else:
+                            if current_chunk:
+                                chunks.append(current_chunk.strip())
+                            current_chunk = paragraph + "\n\n"
+                    
+                    if current_chunk:  # Add the last chunk
+                        chunks.append(current_chunk.strip())
+                
+                # Process each chunk
+                for i, chunk_text in enumerate(chunks):
+                    chunk_title = f"{title} (Part {i+1}/{len(chunks)})"
+                    
+                    # Create embeddings for this chunk
+                    chunk_title_embedding = self.get_embedding(chunk_title)
+                    chunk_text_embedding = self.get_embedding(chunk_text)
+                    
+                    # Extract keywords and entities for this chunk
+                    chunk_keywords = self.extract_keywords(chunk_text)
+                    chunk_entities = self.extractor.extract_entities(chunk_text)
+                    
+                    # Add document to vector store
+                    doc_id = self.vector_store.add_document(
+                        title=chunk_title,
+                        text=chunk_text,
+                        title_embedding=chunk_title_embedding,
+                        text_embedding=chunk_text_embedding,
+                        keywords=chunk_keywords,
+                        entities=chunk_entities,
+                        metadata={'source': source, 'is_chunk': True, 'chunk_number': i+1, 'total_chunks': len(chunks)}
+                    )
+                    
+                    print(f"Added document chunk {i+1}/{len(chunks)} with ID: {doc_id}")
+                
+                return True
+            else:
+                # Process as a single document if size is manageable
+                print(f"Processing section: '{title[:50]}...' with {len(text)} chars of text")
+                
+                # Create embeddings
+                title_embedding = self.get_embedding(title)
+                text_embedding = self.get_embedding(text)
+                
+                # Extract keywords and entities
+                keywords = self.extract_keywords(text)
+                entities = self.extractor.extract_entities(text)
+                
+                print(f"Extracted {len(keywords)} keywords and {sum(len(v) for v in entities.values())} entities")
 
-            # Add document to vector store
-            doc_id = self.vector_store.add_document(
-                title=title,
-                text=text,
-                title_embedding=title_embedding,
-                text_embedding=text_embedding,
-                keywords=keywords,
-                entities=entities,
-                metadata={'source': source}
-            )
-            
-            print(f"Added document with ID: {doc_id}")
-            return True
+                # Add document to vector store
+                doc_id = self.vector_store.add_document(
+                    title=title,
+                    text=text,
+                    title_embedding=title_embedding,
+                    text_embedding=text_embedding,
+                    keywords=keywords,
+                    entities=entities,
+                    metadata={'source': source}
+                )
+                
+                print(f"Added document with ID: {doc_id}")
+                return True
             
         except Exception as e:
             print(f"Error processing section: {str(e)}")
