@@ -399,7 +399,7 @@ class RAGSystem:
         # Developer information
         self.developer_info = {
             "name": "Shahan Ahmed",
-            "title": "Data Scientist",
+            "title": "Jr Data Analyst",
             "company": "Startsmartz Technologies LLC",
             "github": "https://github.com/AhmedShahan",
             "researchgate": "https://www.researchgate.net/profile/Shahan-Ahmed-2?ev=hdr_xprf",

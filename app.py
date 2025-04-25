@@ -28,7 +28,7 @@ if "extracted_tables" not in st.session_state:
 # Helper function to get the current server URL
 def get_server_url():
     # Return fixed URL for simplicity and consistency
-    return "http://0.0.0.1:8501/"
+    return "http://127.0.0.1:8501/"
 
 # Helper function to create a zip file of the Chrome extension
 def create_extension_zip():

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG Chatbot Demo</title>
+    <style>
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+        }
+        
+        body {
+            background-color: #f5f7fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            color: #2563eb;
+        }
+        
+        .description {
+            font-size: 1.1rem;
+            color: #666;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 30px;
+        }
+        
+        .card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+            width: 100%;
+            max-width: 800px;
+        }
+        
+        .card h2 {
+            font-size: 1.5rem;
+            margin-bottom: 15px;
+            color: #2563eb;
+        }
+        
+        /* Chat bubble styles */
+        .chat-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        
+        .chat-bubble {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            transition: all 0.3s ease;
+        }
+        
+        .chat-bubble:hover {
+            background-color: #2563eb;
+            transform: scale(1.05);
+        }
+        
+        .chat-bubble svg {
+            width: 24px;
+            height: 24px;
+        }
+        
+        .chat-window {
+            position: fixed;
+            bottom: 90px;
+            right: 20px;
+            width: 380px;
+            height: 600px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transform: translateY(20px);
+            opacity: 0;
+            pointer-events: none;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+        
+        .chat-window.open {
+            transform: translateY(0);
+            opacity: 1;
+            pointer-events: all;
+        }
+        
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            background-color: #3b82f6;
+            color: white;
+        }
+        
+        .chat-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        
+        .close-chat {
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .chat-iframe {
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        
+        .error-message {
+            display: none;
+            padding: 20px;
+            color: #e53e3e;
+            text-align: center;
+        }
+        
+        @media (max-width: 480px) {
+            .chat-window {
+                width: calc(100% - 40px);
+                height: 500px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>RAG Chatbot Demo</h1>
+            <p class="description">
+                This is a demonstration page for the RAG (Retrieval-Augmented Generation) chatbot. 
+                Click the chat bubble in the bottom-right corner to interact with the chatbot.
+            </p>
+        </header>
+        
+        <div class="content">
+            <div class="card">
+                <h2>About this Chatbot</h2>
+                <p>
+                    This RAG chatbot can retrieve information from documents and provide intelligent responses.
+                    Click the chat bubble to enter the URL of your chatbot server and start interacting with it.
+                </p>
+                <p style="margin-top: 15px;">
+                    The chatbot allows you to:
+                </p>
+                <ul style="margin-left: 20px; margin-top: 10px;">
+                    <li>Upload and process documents</li>
+                    <li>Extract information from websites</li>
+                    <li>Ask questions about the content</li>
+                    <li>Get AI-powered responses</li>
+                </ul>
+            </div>
+            
+            <div class="card">
+                <h2>How to Use</h2>
+                <p>
+                    1. Click the blue chat bubble in the bottom-right corner<br>
+                    2. Enter the URL of your chatbot (e.g., http://127.0.0.1:8501/)<br>
+                    3. The chatbot interface will open, allowing you to interact with it<br>
+                    4. Use the chat interface to ask questions about your documents
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Chat bubble container -->
+    <div class="chat-container">
+        <button class="chat-bubble" id="chat-toggle">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+        </button>
+        
+        <div class="chat-window" id="chat-window">
+            <div class="chat-header">
+                <h3>RAG Chatbot</h3>
+                <button class="close-chat" id="close-chat">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <iframe id="chat-iframe" class="chat-iframe" src="" frameborder="0" allow="fullscreen" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>
+            <div id="error-message" class="error-message">
+                <h3>Error Loading Chatbot</h3>
+                <p>The chatbot couldn't be loaded. Please check the URL and try again.</p>
+                <button id="open-in-tab" style="background-color: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 4px; margin-top: 10px; cursor: pointer;">
+                    Open in New Tab
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Store the current chatbot URL
+        let currentChatbotUrl = '';
+        
+        // Get DOM elements
+        const chatToggle = document.getElementById('chat-toggle');
+        const chatWindow = document.getElementById('chat-window');
+        const chatIframe = document.getElementById('chat-iframe');
+        const closeButton = document.getElementById('close-chat');
+        const errorMessage = document.getElementById('error-message');
+        const openInTab = document.getElementById('open-in-tab');
+        
+        // Open chat function
+        function openChat() {
+            console.log("Chat toggle clicked"); // Debug log
+            // Prompt for chatbot URL
+            const chatbotUrl = prompt('Enter RAG Chatbot URL:', 'http://127.0.0.1:8501/');
+            
+            if (chatbotUrl && chatbotUrl.trim() !== '') {
+                currentChatbotUrl = chatbotUrl.trim();
+                
+                // Hide error message and show iframe
+                errorMessage.style.display = 'none';
+                chatIframe.style.display = 'block';
+                
+                // Set iframe src
+                chatIframe.src = currentChatbotUrl;
+                chatWindow.classList.add('open');
+                
+                console.log("Loading chatbot at:", currentChatbotUrl); // Debug log
+            }
+        }
+        
+        // Close chat function
+        function handleCloseChat() {
+            console.log("Close button clicked"); // Debug log
+            chatWindow.classList.remove('open');
+            setTimeout(() => {
+                chatIframe.src = '';
+                currentChatbotUrl = '';
+            }, 300); // Wait for animation to complete
+        }
+        
+        // Handle iframe errors
+        function handleIframeError() {
+            console.log("Iframe error detected"); // Debug log
+            chatIframe.style.display = 'none';
+            errorMessage.style.display = 'block';
+        }
+        
+        // Open in new tab function
+        function openInNewTab() {
+            if (currentChatbotUrl) {
+                window.open(currentChatbotUrl, '_blank');
+            }
+        }
+        
+        // Make sure the event binding happens as soon as possible
+        if (document.readyState === 'loading') {
+            // Document still loading, add event listener
+            document.addEventListener('DOMContentLoaded', bindEvents);
+        } else {
+            // Document already loaded, run the function directly
+            bindEvents();
+        }
+        
+        // Function to bind all the necessary events
+        function bindEvents() {
+            console.log("Binding events to DOM elements");
+            
+            // The most reliable way of binding - direct property assignment
+            chatToggle.onclick = function(e) {
+                if (e) e.preventDefault();
+                console.log("Chat toggle clicked (onclick)");
+                openChat();
+                return false;
+            };
+            
+            closeButton.onclick = function(e) {
+                if (e) e.preventDefault();
+                console.log("Close button clicked (onclick)");
+                handleCloseChat();
+                return false;
+            };
+            
+            openInTab.onclick = function(e) {
+                if (e) e.preventDefault();
+                console.log("Open in tab clicked (onclick)");
+                openInNewTab();
+                return false;
+            };
+            
+            // Handle iframe load event
+            chatIframe.onload = function() {
+                console.log("Iframe loaded or attempted to load"); // Debug log
+                if (!this.src || this.src === 'about:blank') {
+                    return; // Skip if iframe is not loaded with a real URL
+                }
+                
+                // Don't try to access iframe content as it will usually fail with CORS
+                // Just assume the iframe loaded successfully
+                console.log("Iframe content assumed to be loaded successfully");
+                
+                // Hide error message if it was showing
+                errorMessage.style.display = 'none';
+                chatIframe.style.display = 'block';
+            };
+        }
+        
+        // Call bindEvents immediately for good measure
+        bindEvents();
+    </script>
+</body>
+</html> 

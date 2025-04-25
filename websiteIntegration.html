@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website with Local Chatbot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        header {
+            background-color: #4a6fa5;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        main {
+            flex: 1;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        
+        footer {
+            background-color: #333;
+            color: white;
+            text-align: center;
+            padding: 1rem;
+            margin-top: auto;
+        }
+        
+        .content {
+            background-color: white;
+            border-radius: 8px;
+            padding: 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+        
+        /* Chat bubble styling */
+        .chat-bubble {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background-color: #4a6fa5;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+            z-index: 100;
+        }
+        
+        .chat-bubble:hover {
+            transform: scale(1.1);
+            background-color: #3a5a8a;
+        }
+        
+        /* Chat icon */
+        .chat-icon {
+            width: 30px;
+            height: 30px;
+        }
+        
+        /* Chat overlay */
+        .chat-overlay {
+            display: none;
+            position: fixed;
+            bottom: 90px;
+            right: 20px;
+            width: 400px;
+            height: 500px;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            z-index: 99;
+            overflow: hidden;
+            flex-direction: column;
+        }
+        
+        .chat-header {
+            background-color: #4a6fa5;
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        .chat-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .iframe-form {
+            display: flex;
+            flex-direction: column;
+            margin: auto;
+            width: 80%;
+            padding: 2rem 0;
+        }
+        
+        .iframe-form label {
+            margin-bottom: 0.5rem;
+            font-weight: bold;
+        }
+        
+        .iframe-form input {
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+        }
+        
+        .iframe-form button {
+            padding: 0.5rem 1rem;
+            background-color: #4a6fa5;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        .iframe-form button:hover {
+            background-color: #3a5a8a;
+        }
+        
+        .chat-iframe {
+            display: none;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        
+        .status-message {
+            text-align: center;
+            padding: 1rem;
+            color: #777;
+        }
+        
+        .error-message {
+            color: #d9534f;
+            text-align: center;
+            padding: 1rem;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Website with Local Chatbot Integration</h1>
+    </header>
+    
+    <main>
+        <div class="content">
+            <h2>About This Demo</h2>
+            <p>This website demonstrates how to integrate a locally running chatbot into a webpage using a chat bubble interface.</p>
+            <p>Click the chat bubble in the bottom right corner and enter the ID of your local RAG-based chatbot to connect.</p>
+        </div>
+        
+        <div class="content">
+            <h2>How It Works</h2>
+            <p>The chat bubble opens an overlay that requests your chatbot ID. Once provided, it connects to your local chatbot running at <code>http://0.0.0.1:8501/</code>.</p>
+            <p>This is ideal for testing chatbot integrations during development before deploying to a production environment.</p>
+        </div>
+    </main>
+    
+    <footer>
+        <p>&copy; 2025 Local Chatbot Integration Demo</p>
+    </footer>
+    
+    <!-- Chat Bubble -->
+    <div class="chat-bubble" id="chatBubble">
+        <svg class="chat-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+    </div>
+    
+    <!-- Chat Overlay -->
+    <div class="chat-overlay" id="chatOverlay">
+        <div class="chat-header">
+            <h3>Local Chatbot</h3>
+            <button class="close-btn" id="closeChat">&times;</button>
+        </div>
+        <div class="chat-body">
+            <!-- iframe ID form -->
+            <form class="iframe-form" id="iframeForm">
+                <label for="iframeId">Enter Iframe ID:</label>
+                <input type="text" id="iframeId" name="iframeId" placeholder="e.g. rag-chatbot-1" required>
+                <p class="status-message">This will connect to your local RAG chatbot at http://0.0.0.1:8501/</p>
+                <button type="submit">Connect</button>
+            </form>
+            
+            <p class="error-message" id="errorMessage">Could not connect to the chatbot. Please make sure it's running at http://0.0.0.1:8501/</p>
+            
+            <!-- The iframe will load the local chatbot -->
+            <iframe class="chat-iframe" id="chatIframe"></iframe>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatBubble = document.getElementById('chatBubble');
+            const chatOverlay = document.getElementById('chatOverlay');
+            const closeChat = document.getElementById('closeChat');
+            const iframeForm = document.getElementById('iframeForm');
+            const chatIframe = document.getElementById('chatIframe');
+            const errorMessage = document.getElementById('errorMessage');
+            
+            // Base URL for the local chatbot
+            const baseUrl = 'http://0.0.0.1:8501/';
+            
+            // Open chat overlay when chat bubble is clicked
+            chatBubble.addEventListener('click', function() {
+                chatOverlay.style.display = 'flex';
+            });
+            
+            // Close chat overlay
+            closeChat.addEventListener('click', function() {
+                chatOverlay.style.display = 'none';
+                // Reset state
+                iframeForm.style.display = 'flex';
+                chatIframe.style.display = 'none';
+                errorMessage.style.display = 'none';
+                chatIframe.src = '';
+            });
+            
+            // Handle iframe form submission
+            iframeForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const iframeId = document.getElementById('iframeId').value.trim();
+                
+                if (iframeId) {
+                    try {
+                        // Hide the form
+                        iframeForm.style.display = 'none';
+                        
+                        // Set the iframe source - for a local chatbot, we'll use the base URL
+                        // and potentially pass the ID as a query parameter
+                        chatIframe.src = `${baseUrl}?iframe_id=${encodeURIComponent(iframeId)}`;
+                        
+                        // Add an event listener to detect if iframe fails to load
+                        chatIframe.onload = function() {
+                            // Show the iframe
+                            chatIframe.style.display = 'block';
+                        };
+                        
+                        chatIframe.onerror = function() {
+                            showError();
+                        };
+                        
+                        // Set a timeout in case the iframe doesn't load in 5 seconds
+                        setTimeout(function() {
+                            if (chatIframe.style.display !== 'block') {
+                                showError();
+                            }
+                        }, 5000);
+                    } catch (error) {
+                        showError();
+                    }
+                }
+            });
+            
+            function showError() {
+                errorMessage.style.display = 'block';
+                chatIframe.style.display = 'none';
+                
+                // Show the form again after 3 seconds
+                setTimeout(function() {
+                    errorMessage.style.display = 'none';
+                    iframeForm.style.display = 'flex';
+                }, 3000);
+            }
+        });
+    </script>
+</body>
+</html>
