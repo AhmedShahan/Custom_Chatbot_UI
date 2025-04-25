@@ -5,6 +5,10 @@ import validators  # Make sure to install this package
 import base64
 from datetime import datetime
 from fpdf import FPDF
+import socket
+import zipfile
+import os
+import io
 
 # Configure page
 st.set_page_config(page_title="RAG Chatbot", layout="wide")
@@ -13,13 +17,32 @@ st.set_page_config(page_title="RAG Chatbot", layout="wide")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "current_page" not in st.session_state:
-    st.session_state.current_page = "Training"
+    st.session_state.current_page = "Welcome"
 if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
 if "document_chunks" not in st.session_state:
     st.session_state.document_chunks = []
 if "extracted_tables" not in st.session_state:
     st.session_state.extracted_tables = []
+
+# Helper function to get the current server URL
+def get_server_url():
+    # Return fixed URL for simplicity and consistency
+    return "http://0.0.0.1:8501/"
+
+# Helper function to create a zip file of the Chrome extension
+def create_extension_zip():
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # Get all files in the chrome-extension directory
+        for root, dirs, files in os.walk("chrome-extension"):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, "chrome-extension")
+                zipf.write(file_path, arcname=arcname)
+    
+    memory_file.seek(0)
+    return memory_file.getvalue()
 
 def upload_document(file):
     """Upload document to backend"""
@@ -166,6 +189,8 @@ def create_chat_pdf(messages):
 # Sidebar navigation
 with st.sidebar:
     st.title("Navigation")
+    if st.button("Welcome Page"):
+        st.session_state.current_page = "Welcome"
     if st.button("Training Page"):
         st.session_state.current_page = "Training"
     if st.button("Playground"):
@@ -174,8 +199,85 @@ with st.sidebar:
         else:
             st.session_state.current_page = "Playground"
 
+# Welcome Page
+if st.session_state.current_page == "Welcome":
+    st.title("Welcome to RAG Chatbot")
+    
+    # Description
+    st.markdown("""
+    This application provides a powerful RAG (Retrieval-Augmented Generation) chatbot that can answer questions based on your documents.
+    You can upload documents or provide website URLs and then interact with your data through a smart conversational interface.
+    """)
+    
+    # Get the current Streamlit URL
+    iframe_url = get_server_url()
+    
+    # Copy to clipboard functionality using HTML and JavaScript
+    st.subheader("Embed the Chatbot in Your Website")
+    st.markdown(f"**Iframe URL:** `{iframe_url}`")
+    
+    copy_button_html = f"""
+    <div style="display: flex; align-items: center; margin: 1rem 0;">
+        <input type="text" value="{iframe_url}" 
+               id="iframe-url" 
+               style="flex-grow: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;" 
+               readonly>
+        <button onclick="copyUrl()" 
+                style="margin-left: 0.5rem; background-color: #4CAF50; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">
+            Copy URL
+        </button>
+    </div>
+    
+    <script>
+    function copyUrl() {{
+        var copyText = document.getElementById("iframe-url");
+        copyText.select();
+        copyText.setSelectionRange(0, 99999);
+        navigator.clipboard.writeText(copyText.value);
+        
+        var button = document.querySelector("button");
+        var originalText = button.innerHTML;
+        button.innerHTML = "Copied!";
+        setTimeout(function() {{
+            button.innerHTML = originalText;
+        }}, 2000);
+    }}
+    </script>
+    """
+    
+    st.markdown(copy_button_html, unsafe_allow_html=True)
+    
+    # Chrome Extension Download Button
+    st.subheader("Use Our Chrome Extension")
+    st.markdown("""
+    Install our Chrome Extension to access the chatbot from any webpage. 
+    Just click the button below to download the extension, then:
+    
+    1. Unzip the downloaded file
+    2. Open Chrome and go to `chrome://extensions/`
+    3. Enable "Developer mode" (toggle in the top-right)
+    4. Click "Load unpacked" and select the unzipped folder
+    5. The extension icon will appear in your toolbar
+    """)
+    
+    # Generate zip file for download
+    extension_zip = create_extension_zip()
+    st.download_button(
+        label="Download Chrome Extension",
+        data=extension_zip,
+        file_name="rag-chatbot-extension.zip",
+        mime="application/zip",
+        help="Download the Chrome extension package as a zip file"
+    )
+    
+    # Get Started Button
+    st.markdown("---")
+    if st.button("Get Started →", type="primary"):
+        st.session_state.current_page = "Training"
+        st.rerun()
+
 # Training Page
-if st.session_state.current_page == "Training":
+elif st.session_state.current_page == "Training":
     st.title("Document Training")
     
     # Add tabs for different input methods

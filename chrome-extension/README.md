@@ -14,10 +14,12 @@ This Chrome extension adds a chat bubble to any web page, which opens the RAG Ch
 
 1. Click the RAG Chatbot icon in your Chrome toolbar to toggle the chat bubble on the current page
 2. Click the blue chat bubble that appears in the bottom-right corner of the page
-3. Enter the URL where your RAG Chatbot is running (e.g., `http://localhost:8501`)
+3. Enter the URL where your RAG Chatbot is running (e.g., `http://127.0.0.1:8501/`)
 4. The chatbot will open in an iframe on the page
 5. Use the chat interface to interact with the RAG Chatbot
 6. Click the X button to close the chatbot
+
+**Note:** On HTTPS sites (like Google or Facebook), you might see an error when trying to load an HTTP chatbot URL due to browser security restrictions. If this happens, you can use the "Open in New Tab" button in the error message.
 
 ## Development
 

@@ -4,7 +4,7 @@ chrome.runtime.onInstalled.addListener(() => {
     
     // Initialize storage with default settings
     chrome.storage.local.set({
-      lastUsedUrl: 'http://localhost:8501',
+      lastUsedUrl: 'http://127.0.0.1:8501/',
       errorCount: 0
     });
 });

@@ -63,8 +63,8 @@ if (!document.getElementById('rag-chat-bubble')) {
     document.getElementById('rag-chat-toggle').addEventListener('click', () => {
       // Retrieve last used URL from storage if available
       chrome.storage.local.get(['lastUsedUrl'], (result) => {
-        const defaultUrl = result.lastUsedUrl || 'http://localhost:8501';
-        const chatbotUrl = prompt('Enter RAG Chatbot URL (e.g., http://localhost:8501):', defaultUrl);
+        const defaultUrl = result.lastUsedUrl || 'http://127.0.0.1:8501/';
+        const chatbotUrl = prompt('Enter RAG Chatbot URL:', defaultUrl);
         
         if (chatbotUrl && chatbotUrl.trim() !== '') {
           currentChatbotUrl = chatbotUrl.trim();
@@ -75,7 +75,7 @@ if (!document.getElementById('rag-chat-bubble')) {
             url: currentChatbotUrl
           });
           
-          // Hide error message and show iframe
+          // Always try to use the iframe first
           document.getElementById('rag-error-message').style.display = 'none';
           document.getElementById('rag-iframe').style.display = 'block';
           
