@@ -98,15 +98,19 @@ def get_extracted_tables():
 
 def get_answer(question, model_type, model_name):
     """Get answer from backend"""
-    response = requests.post(
-        "http://localhost:8000/ask",
-        params={
-            "question": question,
-            "model_type": model_type,
-            "model_name": model_name
-        }
-    )
-    return response.json()
+    try:
+        response = requests.post(
+            "http://localhost:8000/ask",
+            params={
+                "question": question,
+                "model_type": model_type,
+                "model_name": model_name
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        return {"error": f"Request failed: {str(e)}"}
 
 def create_chat_pdf(messages):
     """Create a PDF from chat history"""
