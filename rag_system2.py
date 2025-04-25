@@ -350,7 +350,7 @@ class ExtractiveAnswerGenerator:
             return "Encountered an issue while generating an answer from the document."
 
 class RAGSystem:
-    def __init__(self, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
+    def __init__(self, model_name: str = "deepseek-r1:latest", use_llm: bool = True, method: str = "hybrid"):
         self.vector_store = ParallelVectorStore()
         self.templates = ResponseTemplate()
         self.extractor = RuleBasedExtractor()
@@ -1143,8 +1143,7 @@ class RAGSystem:
                     context_parts = []
                     for i, (doc, sim) in enumerate(similarities[:min(k, len(similarities))]):
                         if sim < 0 or sim >= 0.1:
-                            relevance_str = f"{sim:.2f}" if sim >= 0 else "N/A"
-                            context_parts.append(f"Section {i+1} (Relevance: {relevance_str}):\nTitle: {doc.title}\nContent: {doc.text[:1000]}...")
+                            context_parts.append(f"Section {i+1}:\nTitle: {doc.title}\nContent: {doc.text[:1000]}...")
                     context = "\n\n".join(context_parts)
                     prompt = f"""Answer ONLY based on the information in these sections. If you can't find the answer in the text below, say "I don't have information about that in the document."
 
@@ -1197,16 +1196,8 @@ Answer:"""
         return self._format_response(response)
         
     def _format_similarity_info(self, similarities) -> str:
-        if not similarities:
-            return ""
-        info = "\n\nRelevance scores:\n"
-        for i, (doc, sim) in enumerate(similarities[:3]):
-            if i >= 3:
-                break
-            title = doc.title[:30] + "..." if len(doc.title) > 30 else doc.title
-            score = f"{sim:.2f}" if sim >= 0 else "N/A"
-            info += f"- {title}: {score}\n"
-        return info
+        # Return empty string to remove relevance scores from output
+        return ""
         
     def _format_response(self, response: str) -> str:
         model_type = "LLM" if self.use_llm else "Non-LLM"
@@ -1232,7 +1223,7 @@ Answer:"""
         self.vector_store.save(path_prefix)
 
     @classmethod
-    def load(cls, path_prefix: str, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
+    def load(cls, path_prefix: str, model_name: str = "deepseek-r1:latest", use_llm: bool = True, method: str = "hybrid"):
         rag = cls(model_name, use_llm=use_llm, method=method)
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag

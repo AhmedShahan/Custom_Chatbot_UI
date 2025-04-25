@@ -387,7 +387,7 @@ class ExtractiveAnswerGenerator:
             return "Encountered an issue while generating an answer from the document."
 
 class RAGSystem:
-    def __init__(self, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
+    def __init__(self, model_name: str = "deepseek-r1:latest", use_llm: bool = True, method: str = "hybrid"):
         self.vector_store = ParallelVectorStore()
         self.templates = ResponseTemplate()
         self.extractor = RuleBasedExtractor()
@@ -1735,17 +1735,12 @@ class RAGSystem:
             elif self.use_llm:
                 # Hybrid approach with LLM
                 try:
-                    # Format the context with document similarity scores
+                    # Format the context without document similarity scores
                     context_parts = []
                     for i, (doc, sim) in enumerate(similarities[:min(k, len(similarities))]):
                         # Only include documents with reasonable similarity if we have similarity scores
                         if sim < 0 or sim >= 0.1:  # Include all docs if no similarity (-1) or similarity > threshold
-                            # Format the relevance score safely
-                            if sim >= 0:
-                                relevance_str = f"{sim:.2f}"
-                            else:
-                                relevance_str = "N/A"
-                            context_parts.append(f"Section {i+1} (Relevance: {relevance_str}):\nTitle: {doc.title}\nContent: {doc.text[:1000]}...")
+                            context_parts.append(f"Section {i+1}:\nTitle: {doc.title}\nContent: {doc.text[:1000]}...")
                     
                     context = "\n\n".join(context_parts)
                     
@@ -1819,26 +1814,8 @@ Answer:"""
         
     def _format_similarity_info(self, similarities) -> str:
         """Format similarity information for display"""
-        if not similarities:
-            return ""
-            
-        info = "\n\nRelevance scores:\n"
-        for i, (doc, sim) in enumerate(similarities[:3]):
-            if i >= 3:  # Limit to top 3
-                break
-                
-            # Format the document title
-            title = doc.title[:30] + "..." if len(doc.title) > 30 else doc.title
-            
-            # Format the similarity score
-            if sim >= 0:
-                score = f"{sim:.2f}"
-            else:
-                score = "N/A"
-                
-            info += f"- {title}: {score}\n"
-            
-        return info
+        # Return empty string to remove relevance scores from output
+        return ""
         
     def _format_response(self, response: str) -> str:
         """Format the final response with model information"""
@@ -1874,7 +1851,7 @@ Answer:"""
         self.vector_store.save(path_prefix)
 
     @classmethod
-    def load(cls, path_prefix: str, model_name: str = "deepseek-r1:14b", use_llm: bool = True, method: str = "hybrid"):
+    def load(cls, path_prefix: str, model_name: str = "deepseek-r1:latest", use_llm: bool = True, method: str = "hybrid"):
         rag = cls(model_name, use_llm=use_llm, method=method)
         rag.vector_store = ParallelVectorStore.load(path_prefix)
         return rag

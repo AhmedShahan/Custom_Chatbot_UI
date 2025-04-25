@@ -132,13 +132,32 @@ def create_chat_pdf(messages):
         pdf.cell(190, 10, f"{role}:", ln=True)
         pdf.set_font("Arial", "", 12)
         
-        # Handle multi-line content
+        # Handle multi-line content and encode properly to avoid Unicode errors
         content = message["content"]
+        
+        # Replace problematic Unicode characters with ASCII equivalents
+        content = content.replace(''', "'").replace(''', "'")
+        content = content.replace('"', '"').replace('"', '"')
+        content = content.replace('—', '-').replace('–', '-')
+        content = content.replace('…', '...')
+        
+        # Remove any remaining non-Latin1 characters
+        content = ''.join(c if ord(c) < 256 else '_' for c in content)
+        
         pdf.multi_cell(190, 8, content)
         pdf.ln(5)
     
-    # Return PDF as base64 string
-    return base64.b64encode(pdf.output(dest="S").encode("latin1")).decode("utf-8")
+    # Return PDF as base64 string using a BytesIO buffer to avoid encoding issues
+    try:
+        pdf_output = pdf.output(dest="S").encode("latin1")
+        return base64.b64encode(pdf_output).decode("utf-8")
+    except UnicodeEncodeError:
+        # Fallback if encoding still fails
+        pdf.set_font("Arial", "B", 12)
+        pdf.add_page()
+        pdf.cell(190, 10, "Error: Could not encode all characters in the chat.", ln=True)
+        pdf_output = pdf.output(dest="S").encode("latin1")
+        return base64.b64encode(pdf_output).decode("utf-8")
 
 # Sidebar navigation
 with st.sidebar:
@@ -149,15 +168,6 @@ with st.sidebar:
         if not st.session_state.document_processed:
             st.error("Please process a document first!")
         else:
-            # Fetch document content and tables when navigating to Playground
-            content_result = get_document_content()
-            if "error" not in content_result:
-                st.session_state.document_chunks = content_result.get("chunks", [])
-            
-            tables_result = get_extracted_tables()
-            if "error" not in tables_result:
-                st.session_state.extracted_tables = tables_result.get("tables", [])
-                
             st.session_state.current_page = "Playground"
 
 # Training Page
@@ -181,16 +191,6 @@ if st.session_state.current_page == "Training":
                     else:
                         st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections in the document.")
                         st.session_state.document_processed = True
-                        
-                        # Fetch document content and tables
-                        content_result = get_document_content()
-                        if "error" not in content_result:
-                            st.session_state.document_chunks = content_result.get("chunks", [])
-                        
-                        tables_result = get_extracted_tables()
-                        if "error" not in tables_result:
-                            st.session_state.extracted_tables = tables_result.get("tables", [])
-                            
                         st.session_state.current_page = "Playground"
     
     with tab2:
@@ -218,16 +218,6 @@ if st.session_state.current_page == "Training":
                     else:
                         st.success(f"{result['message']} Found {result.get('doc_count', 0)} sections from the website.")
                         st.session_state.document_processed = True
-                        
-                        # Fetch document content and tables
-                        content_result = get_document_content()
-                        if "error" not in content_result:
-                            st.session_state.document_chunks = content_result.get("chunks", [])
-                        
-                        tables_result = get_extracted_tables()
-                        if "error" not in tables_result:
-                            st.session_state.extracted_tables = tables_result.get("tables", [])
-                            
                         st.session_state.current_page = "Playground"
     
     # Document status section
@@ -250,8 +240,8 @@ if st.session_state.current_page == "Training":
 elif st.session_state.current_page == "Playground":
     st.title("RAG Chatbot Playground")
 
-    # Create tabs for different views
-    playground_tab, content_tab, tables_tab = st.tabs(["Chat", "Document Content", "Extracted Tables"])
+    # Create tabs for different views - removing content_tab and tables_tab
+    playground_tab = st.container()
     
     with playground_tab:
         # Model Selection
@@ -262,10 +252,8 @@ elif st.session_state.current_page == "Playground":
         
         with col2:
             if model_type == "LLM":
-                model_name = st.selectbox(
-                    "Select LLM Model",
-                    ["llama3.2", "gamma", "deepseek-r1:14b", "opencoder:1.5b", "chatglm-6b-v2"]
-                )
+                model_name = "deepseek-r1:latest"
+                st.info("Using deepseek-r1:latest model")
             else:
                 model_name = st.selectbox(
                     "Select Method",
@@ -324,107 +312,4 @@ elif st.session_state.current_page == "Playground":
         # Clear chat button
         if st.button("Clear Chat"):
             st.session_state.messages = []
-            st.rerun()
-    
-    with content_tab:
-        st.subheader("Document Content")
-        
-        # Show document chunks
-        if st.session_state.document_chunks:
-            st.write(f"Total chunks: {len(st.session_state.document_chunks)}")
-            
-            # Display first few chunks by default
-            display_limit = st.slider("Number of chunks to display", 1, len(st.session_state.document_chunks), min(5, len(st.session_state.document_chunks)))
-            
-            # Add search and filtering options
-            chunk_search = st.text_input("Search within chunks", "")
-            
-            # Filter chunks if search term provided
-            filtered_chunks = st.session_state.document_chunks
-            if chunk_search:
-                filtered_chunks = [
-                    chunk for chunk in st.session_state.document_chunks 
-                    if chunk_search.lower() in chunk['title'].lower() or chunk_search.lower() in chunk['text'].lower()
-                ]
-                st.write(f"Found {len(filtered_chunks)} chunks matching '{chunk_search}'")
-            
-            # Show visualization of chunk sizes
-            if len(filtered_chunks) > 0:
-                # Create chart data
-                chart_data = {
-                    'Chunk': [f"Chunk {i+1}: {chunk['title'][:20]}..." for i, chunk in enumerate(filtered_chunks[:display_limit])],
-                    'Size (chars)': [chunk['text_length'] for chunk in filtered_chunks[:display_limit]]
-                }
-                st.bar_chart(chart_data, x='Chunk', y='Size (chars)')
-            
-            for i, chunk in enumerate(filtered_chunks[:display_limit]):
-                with st.expander(f"Chunk {i+1}: {chunk['title']}"):
-                    st.write(f"**ID:** {chunk['id']}")
-                    st.write(f"**Length:** {chunk['text_length']} characters")
-                    
-                    # Display text with proper formatting
-                    st.markdown("**Content:**")
-                    
-                    # Show text with syntax highlighting if it contains code
-                    if "```" in chunk['text'] or "def " in chunk['text'] or "class " in chunk['text']:
-                        st.code(chunk['text'], language="python")
-                    else:
-                        # Use a monospace font for better readability
-                        st.text_area("", chunk['text'], height=300, key=f"chunk_{i}")
-                    
-                    # Show if this chunk contains table-like content
-                    if chunk.get('has_table', False):
-                        st.info("This chunk contains table-like content")
-                    st.write("---")
-                    
-            # Pagination controls if needed
-            if len(filtered_chunks) > display_limit:
-                st.write(f"Showing {display_limit} of {len(filtered_chunks)} chunks. Adjust the slider to see more.")
-        else:
-            st.info("No document content available. Please process a document first.")
-    
-    with tables_tab:
-        st.subheader("Extracted Tables")
-        
-        # Show extracted tables with enhanced display
-        if st.session_state.extracted_tables:
-            st.write(f"Total tables found: {len(st.session_state.extracted_tables)}")
-            
-            # Add search option for tables
-            table_search = st.text_input("Search within tables", "")
-            
-            # Filter tables if search term provided
-            filtered_tables = st.session_state.extracted_tables
-            if table_search:
-                filtered_tables = [
-                    table for table in st.session_state.extracted_tables 
-                    if table_search.lower() in table['title'].lower() or table_search.lower() in table['content'].lower()
-                ]
-                st.write(f"Found {len(filtered_tables)} tables matching '{table_search}'")
-            
-            # Display tables
-            for i, table in enumerate(filtered_tables):
-                with st.expander(f"Table {i+1}: {table['title']}"):
-                    st.write(f"**Source:** {table['source']}")
-                    
-                    # Attempt to extract and display structured table
-                    try:
-                        # See if we can extract a proper table structure
-                        table_content = table['content']
-                        
-                        # Check if it has pipe separators (markdown table)
-                        if "|" in table_content:
-                            st.markdown("**Table Format:**")
-                            st.markdown(table_content)
-                            
-                        # Display as code block for better structure
-                        st.markdown("**Raw Table Content:**")
-                        st.code(table_content, language=None)
-                        
-                    except Exception as e:
-                        # Fall back to simple text display
-                        st.text_area("Table Content", table['content'], height=200, key=f"table_{i}")
-                    
-                    st.write("---")
-        else:
-            st.info("No tables found in the document. Tables are automatically detected from structured content.") 
+            st.rerun() 
