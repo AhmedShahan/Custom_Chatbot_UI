@@ -1,0 +1,33 @@
+{
+    "manifest_version": 3,
+    "name": "RAG Chatbot",
+    "version": "1.0",
+    "description": "A chat bubble that opens a RAG Chatbot application in an iframe",
+    "icons": {
+      "128": "icon.svg"
+    },
+    "action": {
+      "default_popup": "popup.html",
+      "default_icon": "icon.svg"
+    },
+    "permissions": [
+      "activeTab",
+      "scripting",
+      "storage",
+      "tabs"
+    ],
+    "host_permissions": [
+      "http://localhost:*/",
+      "http://127.0.0.1:*/"
+    ],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content.js"],
+        "css": ["styles.css"]
+      }
+    ]
+  }
