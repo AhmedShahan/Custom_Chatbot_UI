@@ -217,6 +217,44 @@ The system can be customized through environment variables or configuration file
 - `CHUNK_SIZE`: Document chunk size for processing
 - `HYBRID_ALPHA`: Weight between vector and keyword search in hybrid mode
 
+## Chrome Extension Integration
+
+IntelliDoc includes a Chrome extension that allows you to access the chatbot directly from any web page.
+
+### Extension Installation
+
+1. Navigate to the `chrome-extension` directory in the project
+2. Open Chrome and go to `chrome://extensions/`
+3. Enable "Developer mode" by toggling the switch in the top-right corner
+4. Click "Load unpacked" and select the `chrome-extension` folder from the project
+5. The extension should now appear in your Chrome toolbar
+
+### Using the Extension
+
+1. Click the IntelliDoc icon in your Chrome toolbar to toggle the chat bubble on the current page
+2. A blue chat bubble will appear in the bottom-right corner of the page
+3. Click the bubble to open the chatbot interface
+4. On first use, enter the URL where your IntelliDoc instance is running (e.g., `http://localhost:8501`)
+5. The chatbot will open in an iframe on the current page
+6. You can now interact with your documents without leaving the current website
+
+### Extension Features
+
+- **Web Page Integration**: Access your documents and ask questions while browsing
+- **Persistent Settings**: The extension remembers your chatbot URL
+- **Cross-Origin Support**: Works with most websites (see troubleshooting for HTTPS limitations)
+- **Responsive Design**: Adapts to different screen sizes
+
+### Extension Troubleshooting
+
+- **HTTPS Security Issues**: If using the extension on HTTPS sites, your IntelliDoc server must also use HTTPS, or you'll need to use the "Open in New Tab" option
+- **CORS Errors**: If you see loading errors, ensure your Streamlit server has CORS disabled:
+  ```
+  streamlit run app.py --server.enableCORS=false --server.enableXsrfProtection=false
+  ```
+- **Extension Not Working**: Ensure the content script is enabled and try refreshing the page
+- **For detailed troubleshooting**: See `chrome-extension/TROUBLESHOOTING.md`
+
 ## Testing Different Document Types
 
 You can use the included test script to verify functionality with different document types:
