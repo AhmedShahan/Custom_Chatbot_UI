@@ -107,13 +107,34 @@ IntelliDoc leverages cutting-edge technologies across its stack:
 
 ### Core Technologies
 
-| Category | Technologies |
-|----------|--------------|
-| **Foundation** | Python 3.10+, FastAPI, Streamlit, Langchain, Ollama |
-| **Document Processing** | Unstructured, PyPDF2/pikepdf, python-docx, python-pptx, pandas, BeautifulSoup4 |
-| **Vector Search** | FAISS, Transformers, RoBERTa, scikit-learn, numpy |
-| **NLP & Analysis** | spaCy, NLTK, Custom NER models |
-| **LLM Integration** | deepseek-r1 (default), Compatible with all Ollama models |
+| Category                        | Technologies       |
+|---------------------------------|--------------------|
+| <th colspan="2">**Cloud Infrastructure & DevOps**</th> |
+|**Version Control System**|Git|
+|**Version Control Host**|GitHub|
+| <th colspan="2">**Backend Technology**</th> |
+|**Programming Language**|Python 3.10.12|
+|**Backend Framework**|FastAPI|
+| <th colspan="2">**AI COMPONENTS**</th> |
+|**Eco System**|LangChain|
+|**Deep Learning framework**|Pytorch|
+|**Document management & Serialization**|UUID & JSON|
+|**Document split**|unstructured.io (https://unstructured.io/) 
+|
+|**Document Conversion**|python-docx, python-pptx, pandas, BeautifulSoup4|
+|**Text Embedding**|RoBERTa, OpenAI's text-embedding-ada-002 
+|
+|**Sentence Transformer**|paraphrase-T5-large, paraphrase-roberta-large-v1 
+|
+|**Vector Store:**|Facebook AI Similarity Search (FAISS) 
+|
+|**Generation Context**|- Non LLM Based: Knowledge Graph-Based Responses, Extractive Summarization, rule
+|
+|**LLM Based**|DeepSeek-r1|
+|**Web Scraping**| Crawl4ai, BeautifulSoup, requests, Selenium
+|
+|**Web Content loader**|WebBaseLoader, Selenium|
+
 
 ### Supported Document Types
 
