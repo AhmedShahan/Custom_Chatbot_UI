@@ -119,20 +119,14 @@ IntelliDoc leverages cutting-edge technologies across its stack:
 |**Eco System**|LangChain|
 |**Deep Learning framework**|Pytorch|
 |**Document management & Serialization**|UUID & JSON|
-|**Document split**|unstructured.io (https://unstructured.io/) 
-|
+|**Document split**|unstructured.io (https://unstructured.io/)|
 |**Document Conversion**|python-docx, python-pptx, pandas, BeautifulSoup4|
-|**Text Embedding**|RoBERTa, OpenAI's text-embedding-ada-002 
-|
-|**Sentence Transformer**|paraphrase-T5-large, paraphrase-roberta-large-v1 
-|
-|**Vector Store:**|Facebook AI Similarity Search (FAISS) 
-|
-|**Generation Context**|- Non LLM Based: Knowledge Graph-Based Responses, Extractive Summarization, rule
-|
+|**Text Embedding**|RoBERTa, OpenAI's text-embedding-ada-002 |
+|**Sentence Transformer**|paraphrase-T5-large, paraphrase-roberta-large-v1|
+|**Vector Store:**|Facebook AI Similarity Search (FAISS)|
+|**Generation Context**|- Non LLM Based: Knowledge Graph-Based Responses, Extractive Summarization, rule|
 |**LLM Based**|DeepSeek-r1|
-|**Web Scraping**| Crawl4ai, BeautifulSoup, requests, Selenium
-|
+|**Web Scraping**| Crawl4ai, BeautifulSoup, requests, Selenium|
 |**Web Content loader**|WebBaseLoader, Selenium|
 
 
